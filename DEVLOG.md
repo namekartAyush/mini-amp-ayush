@@ -33,3 +33,17 @@
 - **Surprised me:** How seamless Java Records integrate with Spring Boot 3 `@ConfigurationProperties` and Jakarta Validation (`@Validated`, `@NotBlank`), creating immutable, fail-fast configuration without any boilerplate or setters.
 - **Verification:** `RegistrarBeanGraphTest` runs with `./mvnw test` passing 3/3 tests (validating typed properties binding, timeout duration parsing, and constructor-injected bean resolution).
 
+## P3 · Domain & Auction CRUD, Request Validation & ProblemDetail
+- **Built:** 
+  - Complete REST CRUD endpoints for `Domain` (`/api/domains`) and `Auction` (`/api/auctions`).
+  - Request validation using Jakarta Validation (`@NotBlank`, `@Pattern`, `@PositiveOrZero`, `@DecimalMin`, `@Future`, `@NotNull`).
+  - Spring Data pagination and sorting via `Pageable` on all collection endpoints (`GET /api/domains`, `GET /api/auctions`).
+  - Global Exception Handler (`GlobalExceptionHandler`) utilizing RFC 7807 `org.springframework.http.ProblemDetail`.
+  - Comprehensive integration test suite (`CrudAndValidationIntegrationTest`) testing 400 validation field errors, 404 missing resource handling, pagination, and end-to-end CRUD flows.
+- **RFC 7807 ProblemDetail Structure:**
+  - `400 Bad Request`: Returns `type="https://api.miniamp.com/errors/validation-error"`, `title="Validation Failed"`, `status=400`, `detail="Validation failed for request parameters"`, and a map of field-level constraint violations in `errors`.
+  - `404 Not Found`: Returns `type="https://api.miniamp.com/errors/not-found"`, `title="Resource Not Found"`, `status=404`, `resource="Domain"` or `"Auction"`, and the attempted `identifier`.
+- **Surprised me:** How seamlessly Spring 6 / Spring Boot 3 `ProblemDetail` standardizes REST error responses across controllers, eliminating the need to craft bespoke error DTO classes.
+- **Verification:** Ran `./mvnw test` with 9/9 passing tests across `AuctionApiApplicationTests`, `RegistrarBeanGraphTest`, and `CrudAndValidationIntegrationTest`.
+
+

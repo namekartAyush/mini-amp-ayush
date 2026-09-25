@@ -99,4 +99,6 @@ cd auction-api
 - [x] **P0 · Skeleton**: Docker Compose (MySQL, Kafka, Kafka UI), Spring Boot 3 app, JPA/Actuator, Health Endpoint verified.
 - [x] **P1 · Java Warm-up**: Domain records JSON parser, Stream filter & group by TLD, valuation statistics, Maven CLI executable.
 - [x] **P2 · Architecture, Packaging & Bean Graph**: Package-by-Feature, `@ConfigurationProperties` record for registrar settings, strict constructor injection, and deterministic bean graph.
+- [x] **P3 · Domain & Auction CRUD & Validation**: Complete CRUD endpoints, pagination/sorting, Jakarta request validation, and uniform RFC 7807 `ProblemDetail` (400 validation errors, 404 missing resource).
+
 

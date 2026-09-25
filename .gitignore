@@ -1,0 +1,13 @@
+# Environments & IDEs
+.env
+.idea/
+.vscode/
+*.iml
+
+# Java / Maven
+target/
+*.class
+
+# OS
+.DS_Store
+Thumbs.db

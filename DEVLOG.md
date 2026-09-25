@@ -45,5 +45,16 @@
   - `404 Not Found`: Returns `type="https://api.miniamp.com/errors/not-found"`, `title="Resource Not Found"`, `status=404`, `resource="Domain"` or `"Auction"`, and the attempted `identifier`.
 - **Surprised me:** How seamlessly Spring 6 / Spring Boot 3 `ProblemDetail` standardizes REST error responses across controllers, eliminating the need to craft bespoke error DTO classes.
 - **Verification:** Ran `./mvnw test` with 9/9 passing tests across `AuctionApiApplicationTests`, `RegistrarBeanGraphTest`, and `CrudAndValidationIntegrationTest`.
-
-
+## L3 · Three runtimes, one worker · Concurrency Benchmark
+- **Built:** 200ms delay HTTP mock server and worker implementations across Java 21, Python 3.11+, and Node.js 20+ evaluating baseline concurrency vs. sabotage modes.
+- **Empirical Results (100 requests @ 200ms simulated latency):**
+  | Runtime | Mode / Scenario | Wall Time | Speedup vs Sabotage |
+  |---|---|---|---|
+  | **Java 21** | Fixed Pool (10 OS threads) | **2,334 ms** (2.33s) | 9.0x |
+  | **Java 21** | **Virtual Threads (Loom)** | **344 ms** (0.34s) | **61.1x** |
+  | **Java 21** | *Sabotage: Pool size 1* | **21,020 ms** (21.02s) | 1.0x (baseline) |
+  | **Python** | `httpx.AsyncClient` + `asyncio.gather` | **1,343 ms** (1.34s) | **15.6x** |
+  | **Python** | *Sabotage: `requests.get` inside coroutine* | **21,033 ms** (21.03s) | 1.0x (starved 50ms heartbeat) |
+  | **Node.js** | `Promise.all` + native `fetch` | **338 ms** (0.34s) | **60.1x** |
+  | **Node.js** | *Sabotage: 200ms synchronous CPU loop* | **20,303 ms** (20.30s) | 1.0x |
+- **Surprised me:** How Project Loom Virtual Threads enabled blocking synchronous Java code (`client.send(...)`) to match Node's asynchronous event loop throughput with zero reactive framework boilerplate.

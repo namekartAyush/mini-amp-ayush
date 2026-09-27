@@ -41,6 +41,14 @@ public class DomainController {
         return ResponseEntity.ok(domainService.listDomains(status, pageable));
     }
 
+    @GetMapping("/search")
+    public ResponseEntity<Page<DomainResponse>> searchDomains(
+            @RequestParam String tld,
+            @RequestParam(required = false, defaultValue = "0") java.math.BigDecimal minEstimatedValue,
+            @PageableDefault(size = 20, sort = "estimatedValue", direction = org.springframework.data.domain.Sort.Direction.DESC) Pageable pageable) {
+        return ResponseEntity.ok(domainService.searchDomainsByTldAndValue(tld, minEstimatedValue, pageable));
+    }
+
     @PutMapping("/{id}")
     public ResponseEntity<DomainResponse> updateDomain(
             @PathVariable Long id,

@@ -54,6 +54,9 @@ class PersistenceAndNPlusOneTest {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired
+    private javax.sql.DataSource dataSource;
+
     private Statistics getHibernateStatistics() {
         return entityManager.getEntityManagerFactory().unwrap(SessionFactory.class).getStatistics();
     }
@@ -144,4 +147,101 @@ class PersistenceAndNPlusOneTest {
 
         assertThat(explainPlan).isNotEmpty();
     }
+
+    @Test
+    @DisplayName("Verify Domain composite index (tld, estimated_value) execution plan")
+    void testDomainIndexExecutionPlan() {
+        dataSeederService.seedDatabase(300, 100, 200);
+
+        List<Map<String, Object>> explainPlan = jdbcTemplate.queryForList(
+                "EXPLAIN SELECT * FROM domains WHERE tld = 'com' AND estimated_value >= 5000 ORDER BY estimated_value DESC"
+        );
+
+        System.out.println("==================================================");
+        System.out.println("EXPLAIN PLAN for domain search (tld + estimated_value):");
+        for (Map<String, Object> row : explainPlan) {
+            System.out.println("  " + row);
+        }
+        System.out.println("==================================================");
+
+        assertThat(explainPlan).isNotEmpty();
+    }
+
+    @Test
+    @DisplayName("Demonstrate two concurrent database sessions, MVCC snapshot isolation and dirty read prevention")
+    void testTwoSessionTransactionIsolationExperiment() throws Exception {
+        // Setup initial auction
+        Domain domain = domainRepository.save(new Domain("isolation-test.com", "com", BigDecimal.valueOf(5000), DomainStatus.AUCTION));
+        Auction auction = auctionRepository.save(new Auction(domain, BigDecimal.valueOf(100), BigDecimal.valueOf(200),
+                Instant.now(), Instant.now().plus(5, ChronoUnit.DAYS), AuctionStatus.ACTIVE));
+        auction.setCurrentHighestBid(BigDecimal.valueOf(500.00));
+        auctionRepository.saveAndFlush(auction);
+
+        Long auctionId = auction.getId();
+        System.out.println("==================================================");
+        System.out.println("TRANSACTION ISOLATION EXPERIMENT (Session 1 vs Session 2)");
+        System.out.println("Initial current_highest_bid = " + auction.getCurrentHighestBid());
+
+        try (java.sql.Connection session1 = dataSource.getConnection();
+             java.sql.Connection session2 = dataSource.getConnection()) {
+
+            session1.setAutoCommit(false);
+            session2.setAutoCommit(false);
+
+            // Step 1: Session 1 mutates the row without committing
+            System.out.println("Session 1: START TRANSACTION; UPDATE auctions SET current_highest_bid = 9999.00 WHERE id = " + auctionId);
+            try (java.sql.PreparedStatement psUpdate = session1.prepareStatement(
+                    "UPDATE auctions SET current_highest_bid = 9999.00 WHERE id = ?")) {
+                psUpdate.setLong(1, auctionId);
+                int updated = psUpdate.executeUpdate();
+                assertThat(updated).isEqualTo(1);
+            }
+
+            // Step 2: Session 2 reads the same row while Session 1 is uncommitted
+            BigDecimal session2ReadBeforeCommit;
+            try (java.sql.PreparedStatement psSelect = session2.prepareStatement(
+                    "SELECT current_highest_bid FROM auctions WHERE id = ?")) {
+                psSelect.setLong(1, auctionId);
+                try (java.sql.ResultSet rs = psSelect.executeQuery()) {
+                    assertThat(rs.next()).isTrue();
+                    session2ReadBeforeCommit = rs.getBigDecimal("current_highest_bid");
+                }
+            }
+            System.out.println("Session 2 (Read BEFORE Session 1 commit): " + session2ReadBeforeCommit);
+            // Session 2 should see old value 500.00 (Dirty Read is prevented)
+            assertThat(session2ReadBeforeCommit).isEqualByComparingTo(BigDecimal.valueOf(500.00));
+
+            // Step 3: Session 1 commits
+            System.out.println("Session 1: COMMIT;");
+            session1.commit();
+
+            // Step 4: Session 2 reads again within its active transaction
+            BigDecimal session2ReadAfterCommit;
+            try (java.sql.PreparedStatement psSelect = session2.prepareStatement(
+                    "SELECT current_highest_bid FROM auctions WHERE id = ?")) {
+                psSelect.setLong(1, auctionId);
+                try (java.sql.ResultSet rs = psSelect.executeQuery()) {
+                    assertThat(rs.next()).isTrue();
+                    session2ReadAfterCommit = rs.getBigDecimal("current_highest_bid");
+                }
+            }
+            System.out.println("Session 2 (Read AFTER Session 1 commit, same transaction): " + session2ReadAfterCommit);
+
+            // Step 5: Session 2 commits its transaction and reads in a fresh transaction
+            session2.commit();
+            BigDecimal session2FreshRead;
+            try (java.sql.PreparedStatement psSelect = session2.prepareStatement(
+                    "SELECT current_highest_bid FROM auctions WHERE id = ?")) {
+                psSelect.setLong(1, auctionId);
+                try (java.sql.ResultSet rs = psSelect.executeQuery()) {
+                    assertThat(rs.next()).isTrue();
+                    session2FreshRead = rs.getBigDecimal("current_highest_bid");
+                }
+            }
+            System.out.println("Session 2 (Fresh transaction after commit): " + session2FreshRead);
+            assertThat(session2FreshRead).isEqualByComparingTo(BigDecimal.valueOf(9999.00));
+            System.out.println("==================================================");
+        }
+    }
 }
+

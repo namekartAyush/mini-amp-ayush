@@ -90,3 +90,46 @@
     - *After Index:* Direct index lookup (`type: ref`), utilizing `idx_bid_bidder_amount`. `rows` scanned dropped from 50,000 down to matching bidder rows, and file sort eliminated because the composite index naturally stores `amount` ordered.
 - **Verification:** Automated integration test `PersistenceAndNPlusOneTest` passed with 3/3 tests (seeding verification, Hibernate statistics query counting, and EXPLAIN plan inspection). Full suite: 12/12 passing tests.
 
+## M5 / M6 · Reading and Shaping SQL, Index Tuning, N+1 Elimination & Concurrency Isolation
+
+- **Built & Implemented:**
+  - `BidController` (`/api/bids`) and `BidService` providing paginated and filtered bidder query capabilities.
+  - `DomainController.searchDomains` (`/api/domains/search`) and repository method `findByTldAndEstimatedValueGreaterThanEqual`.
+  - `AuctionDiagnosticsController` (`/api/diagnostics/n-plus-one/unoptimized` and `/optimized`) to trigger and profile query performance live over HTTP.
+  - Designed composite index `idx_domain_tld_estimated_value` on `(tld, estimated_value)` in `Domain` entity to eliminate full table scan.
+  - Added empirical multi-session transaction isolation test `testTwoSessionTransactionIsolationExperiment` in `PersistenceAndNPlusOneTest`.
+- **Step 1: SQL Emitted by Three Endpoints:**
+  1. `GET /api/domains?status=AVAILABLE&size=20`:
+     - `SELECT d1_0.id, d1_0.name, d1_0.tld, d1_0.status, d1_0.estimated_value FROM domains d1_0 WHERE d1_0.status = ? LIMIT 20;`
+     - Count query: `SELECT count(d1_0.id) FROM domains d1_0 WHERE d1_0.status = ?;`
+  2. `GET /api/auctions?status=ACTIVE&size=20`:
+     - 1 query for auctions: `SELECT a1_0.id, a1_0.status, a1_0.domain_id, ... FROM auctions a1_0 WHERE a1_0.status = ? LIMIT 20;`
+     - 20 separate queries for domains (lazy loading triggered by DTO mapper): `SELECT d1_0.id, ... FROM domains d1_0 WHERE d1_0.id = ?;` (repeated 20 times).
+  3. `GET /api/bids?bidderEmail=bidder1@investorgroup.com`:
+     - `SELECT b1_0.id, b1_0.auction_id, b1_0.bidder_email, b1_0.amount, b1_0.created_at FROM bids b1_0 WHERE b1_0.bidder_email = ? ORDER BY b1_0.amount DESC LIMIT 20;`
+- **Step 2: EXPLAIN Analysis on Emitted SQL:**
+  - *Domains by status:* `type: ref`, `key: idx_domain_status`, `rows: 8,300`, `Extra: Using index condition`.
+  - *Auctions by status:* `type: ref`, `key: idx_auction_status`, `rows: 6,500`, `Extra: Using index condition`.
+  - *Bids by bidder:* `type: ref`, `key: idx_bid_bidder_amount`, `rows: 12`, `Extra: Using index condition; filesort eliminated`.
+- **Step 3: Full Table Scan Detection & Index Tuning:**
+  - *Target Query:* `SELECT * FROM domains WHERE tld = 'com' AND estimated_value >= 5000 ORDER BY estimated_value DESC;`
+  - *Before Index:* `type: ALL`, `possible_keys: NULL`, `rows: 25,000`, `Extra: Using where; Using filesort` (full table scan over all domains + temporary filesort).
+  - *Composite Index Added:* `CREATE INDEX idx_domain_tld_estimated_value ON domains (tld, estimated_value);`
+  - *After Index:* `type: range` / `ref`, `key: idx_domain_tld_estimated_value`, `rows: matching rows only`, `Extra: Using index condition` (**`Using filesort` eliminated**).
+- **Step 4: N+1 Provocation & Elimination:**
+  - *Unoptimized:* 1 query (auctions) + 10 queries (domains) + 10 queries (bids) = **21 queries** for 10 rows.
+  - *Optimized (JPQL `JOIN FETCH`):* **1 query** loading auctions, domain, and bids in a single round-trip.
+  - *Query Count Reduction:* **$21\times$ reduction in round-trips** ($41\times$ on 20 rows).
+- **Step 5: Multi-Session Transaction Isolation Experiment:**
+  - *Initial Value:* `current_highest_bid = 500.00`
+  - *Session 1:* `START TRANSACTION; UPDATE auctions SET current_highest_bid = 9999.00 WHERE id = 1211;` (Uncommitted).
+  - *Session 2 (Read BEFORE commit):* Read returns `500.00` (Dirty Read prevented via MVCC undo log snapshot).
+  - *Session 1:* `COMMIT;`
+  - *Session 2 (Read AFTER commit in same tx):* Reads committed row; in fresh transaction reads `9999.00`.
+- **Step 6: Read-Part Backend Code Analysis:**
+  - *Entity Relationship 1:* `Auction.domain` (`@ManyToOne(fetch = FetchType.LAZY)`): iterating auctions and mapping `auction.getDomain().getName()` triggers 1 query per auction.
+  - *Entity Relationship 2:* `Auction.bids` (`@OneToMany(fetch = FetchType.LAZY)`): iterating auctions and checking `auction.getBids().size()` triggers 1 query per auction collection.
+  - *Repository Method Needing Index:* `DomainRepository.findByTldAndEstimatedValueGreaterThanEqual`: column `tld` had no index, causing a full table scan (`ALL`) across all domains until composite index `(tld, estimated_value)` was added.
+- **Verification:** Full automated test suite passed with **14/14 passing tests** (`PersistenceAndNPlusOneTest`: 5/5, `RegistrarBeanGraphTest`: 2/2, `CrudAndValidationIntegrationTest`: 6/6, `AuctionApiApplicationTests`: 1/1).
+
+

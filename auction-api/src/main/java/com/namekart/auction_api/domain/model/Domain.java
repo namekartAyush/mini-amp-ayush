@@ -7,7 +7,8 @@ import java.time.Instant;
 @Entity
 @Table(name = "domains", indexes = {
         @Index(name = "idx_domain_name", columnList = "name", unique = true),
-        @Index(name = "idx_domain_status", columnList = "status")
+        @Index(name = "idx_domain_status", columnList = "status"),
+        @Index(name = "idx_domain_tld_estimated_value", columnList = "tld, estimated_value")
 })
 public class Domain {
 

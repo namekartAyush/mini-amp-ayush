@@ -61,6 +61,12 @@ public class DomainService {
         return domains.map(DomainResponse::fromEntity);
     }
 
+    @Transactional(readOnly = true)
+    public Page<DomainResponse> searchDomainsByTldAndValue(String tld, java.math.BigDecimal minEstimatedValue, Pageable pageable) {
+        Page<Domain> domains = domainRepository.findByTldAndEstimatedValueGreaterThanEqual(tld, minEstimatedValue, pageable);
+        return domains.map(DomainResponse::fromEntity);
+    }
+
     public DomainResponse updateDomain(Long id, UpdateDomainRequest request) {
         Domain domain = domainRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Domain", id));

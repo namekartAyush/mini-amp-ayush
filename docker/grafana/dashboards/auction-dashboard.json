@@ -1,0 +1,89 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "Registrar Request Rate",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "rate(auction_api_registrar_requests_total[1m])",
+          "legendFormat": "Requests / sec",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 0 },
+      "id": 2,
+      "title": "Registrar Error Rate",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "rate(auction_api_registrar_errors_total[1m])",
+          "legendFormat": "Errors / sec",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 0 },
+      "id": 3,
+      "title": "Sync Freshness Ratio (Stale > 2.0)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "(time() - auction_api_sync_last_success_timestamp_seconds) / auction_api_sync_interval_seconds",
+          "legendFormat": "Freshness Ratio",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 0 },
+      "id": 4,
+      "title": "Registrar p95 Latency",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(auction_api_registrar_latency_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p95 Latency (s)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 8 },
+      "id": 5,
+      "title": "Service Liveness Status",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "auction_api_liveness_status",
+          "legendFormat": "Liveness (1=UP, 0=DOWN)",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": ["mini-amp", "auction-api"],
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Auction API Observability Dashboard",
+  "version": 1
+}

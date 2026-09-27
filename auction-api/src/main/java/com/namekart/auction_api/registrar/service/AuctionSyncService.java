@@ -41,6 +41,7 @@ public class AuctionSyncService {
     private final FakeRegistrarClient registrarClient;
     private final DomainRepository domainRepository;
     private final AuctionRepository auctionRepository;
+    private final com.namekart.auction_api.common.metrics.AuctionMetricsService metricsService;
 
     private final AtomicBoolean isSyncRunning = new AtomicBoolean(false);
     private final AtomicInteger syncExecutionCount = new AtomicInteger(0);
@@ -50,10 +51,12 @@ public class AuctionSyncService {
     public AuctionSyncService(
             FakeRegistrarClient registrarClient,
             DomainRepository domainRepository,
-            AuctionRepository auctionRepository) {
+            AuctionRepository auctionRepository,
+            com.namekart.auction_api.common.metrics.AuctionMetricsService metricsService) {
         this.registrarClient = registrarClient;
         this.domainRepository = domainRepository;
         this.auctionRepository = auctionRepository;
+        this.metricsService = metricsService;
     }
 
     /**
@@ -85,20 +88,27 @@ public class AuctionSyncService {
         log.info("Starting scheduled auction sync cycle #{}", execIndex);
 
         try {
+            metricsService.recordRegistrarRequest();
             // Safe fetch with resilience against external failure modes
             List<FakeRegistrarDomainDto> externalAuctions = registrarClient.fetchAuctions(Collections.emptyMap());
             int synced = persistAuctions(externalAuctions);
             successfulSyncCount.incrementAndGet();
+            metricsService.recordSyncSuccess();
+            metricsService.recordRegistrarLatency(java.time.Duration.ofMillis(System.currentTimeMillis() - startTime));
             log.info("Auction sync cycle #{} completed successfully. Synced {} auctions in {}ms",
                     execIndex, synced, (System.currentTimeMillis() - startTime));
 
         } catch (RegistrarBlockedException rbe) {
             blockedIncidentCount.incrementAndGet();
+            metricsService.recordRegistrarError();
+            metricsService.recordRegistrarLatency(java.time.Duration.ofMillis(System.currentTimeMillis() - startTime));
             // Resilient handling: do NOT crash or hammer registrar, log warning and back off until next scheduled tick
             log.warn("Auction sync cycle #{} encountered registrar rate limit / BLOCKED firewall challenge: {}. Backing off safely.",
                     execIndex, rbe.getMessage());
 
         } catch (Exception e) {
+            metricsService.recordRegistrarError();
+            metricsService.recordRegistrarLatency(java.time.Duration.ofMillis(System.currentTimeMillis() - startTime));
             // General network / timeout / 500 error resilience: application thread remains completely alive
             log.error("Auction sync cycle #{} failed due to external registrar error: {}. Will retry on next scheduled cycle.",
                     execIndex, e.getMessage());

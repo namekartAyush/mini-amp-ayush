@@ -15,6 +15,7 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/api/registrar")
+@org.springframework.security.access.prepost.PreAuthorize("hasRole('ADMIN')")
 public class RegistrarController {
 
     private final RegistrarService registrarService;

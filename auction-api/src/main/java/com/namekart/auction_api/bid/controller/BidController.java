@@ -29,6 +29,7 @@ public class BidController {
         return ResponseEntity.ok(bidService.listBids(bidderEmail, pageable));
     }
 
+    @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('BIDDER', 'ADMIN')")
     @org.springframework.web.bind.annotation.PostMapping
     public ResponseEntity<BidResponse> placeBid(
             @jakarta.validation.Valid @org.springframework.web.bind.annotation.RequestBody com.namekart.auction_api.bid.dto.PlaceBidRequest request) {

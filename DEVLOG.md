@@ -486,4 +486,281 @@
      - At the **database level** via atomic conditional SQL (`UPDATE ... WHERE remaining >= amount`) or optimistic locking (`@Version`),
      - Or at the **coordination layer** via distributed locks (Redis Redlock, ZooKeeper, etcd).
 
+---
 
+## P8 · Security, Events, and Live Updates (Day 9, Section 8, with L8 & L11)
+
+### 1. Architectural Overview & Component Design
+
+P8 establishes an end-to-end, production-grade event-driven architecture combining strict method-level security, asynchronous event streaming through Kafka, an idempotent Node.js notification consumer with Server-Sent Events (SSE), and a modern reactive single-page frontend.
+
+```
++---------------------------------------------------------------------------------------------------+
+|                                      BROWSER FRONTEND (SPA)                                       |
+|  - Role Switcher (VIEWER, BIDDER, ADMIN) with JWT Authorization Header                             |
+|  - Active Auctions Catalog with Real-Time Bidding Action                                          |
+|  - Server-Sent Events (SSE) Live Feed with Idempotent Deduplication Tagging                       |
++------------------------------------+-----------------------------------+--------------------------+
+                                     |                                   ^
+            POST /api/bids (Bearer JWT)                                  | SSE Stream: GET /events
+                                     v                                   |
++------------------------------------+------------+     +----------------+--------------------------+
+|                  auction-api                    |     |                     notifier              |
+|  - JwtAuthenticationFilter (validates JWT, MDC) |     |  - Express / Native HTTP + SSE Hub        |
+|  - @PreAuthorize("hasAnyRole('BIDDER','ADMIN')")|     |  - Consumer Group: 'notifier-group'       |
+|  - BidService (Atomic TX, Optimistic Locking)   |     |  - Idempotent Event Deduplication         |
+|  - AuctionEventProducer (Partition by auctionId)|     |  - Persistent Store: notifications.json   |
++-------------------------+-----------------------+     +----------------^--------------------------+
+                          |                                              |
+                          | Kafka Publish: 'auction.events'              | Kafka Consume (Group ID)
+                          +-------------------------> [ Kafka ] ---------+
+```
+
+#### A. JWT Authentication & Method-Level Authorization
+- **Roles:** Defined in [`UserRole.java`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/main/java/com/namekart/auction_api/security/model/UserRole.java): `VIEWER`, `BIDDER`, `ADMIN`.
+- **JWT Provider:** Implemented in [`JwtService.java`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/main/java/com/namekart/auction_api/security/service/JwtService.java) using HMAC-SHA256 (`jjwt` 0.12.6). Generates signed tokens containing claims: `sub` (username), `roles` (`ROLE_<ROLE>`), `iat`, and `exp`.
+- **Filter Chain:** [`JwtAuthenticationFilter.java`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/main/java/com/namekart/auction_api/security/filter/JwtAuthenticationFilter.java) extracts the Bearer token, validates signature and expiry, converts roles into `SimpleGrantedAuthority`, and sets `UsernamePasswordAuthenticationToken` in `SecurityContextHolder`.
+- **Method Security:** Enabled via `@EnableMethodSecurity`.
+  - [`BidController.java`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/main/java/com/namekart/auction_api/bid/controller/BidController.java): `@PreAuthorize("hasAnyRole('BIDDER', 'ADMIN')")` protects `POST /api/bids`. `VIEWER` is strictly rejected.
+  - [`RegistrarController.java`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/main/java/com/namekart/auction_api/registrar/controller/RegistrarController.java): `@PreAuthorize("hasRole('ADMIN')")` protects registrar configuration. Both `VIEWER` and `BIDDER` are strictly rejected.
+  - Unauthenticated access returns RFC 7807 `ProblemDetail` with HTTP 401 Unauthorized; authenticated access with insufficient role returns RFC 7807 `ProblemDetail` with HTTP 403 Forbidden.
+
+#### B. Asynchronous Event Publishing
+- In [`BidService.java`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/main/java/com/namekart/auction_api/bid/service/BidService.java), upon successful transactional bid persistence and auction price update, a domain event [`AuctionKafkaEvent`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/main/java/com/namekart/auction_api/kafka/event/AuctionKafkaEvent.java) (`eventType = "BID_PLACED"`) is constructed.
+- Published via [`AuctionEventProducer.java`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/main/java/com/namekart/auction_api/kafka/producer/AuctionEventProducer.java) to topic `auction.events`.
+- **Partitioning Key Decision:** The partition key is set to `auctionId`. This guarantees strict FIFO ordering for all bids belonging to the same auction across Kafka partitions.
+
+#### C. Notifier Service (Node.js) & Idempotent SSE Streaming
+- **Stack:** Built in Node.js using native HTTP and `kafkajs`.
+- **Consumer Group:** Subscribes to `auction.events` under consumer group `notifier-group`.
+- **Idempotency by Event ID:**
+  - Maintains a persistent `processedEventIds` set backed by `notifications_store.json`.
+  - When a message arrives, its `eventId` is verified against the set. If already present, the event is logged as a duplicate and ignored (not broadcast, not appended to the feed).
+  - If new, `eventId` is registered, the notification record is saved, and it is broadcast live via Server-Sent Events to all connected browser clients.
+- **Server-Sent Events (`GET /events`):**
+  - Keeps persistent HTTP connections open with `text/event-stream`.
+  - Sends a keep-alive comment heartbeat (`: ping\n\n`) every 15s to prevent intermediate reverse proxy / firewall timeouts.
+  - On client connection, transmits an `event: init` payload containing the entire historical notification store so late-joining or reconnecting clients have instant state synchronization.
+
+#### D. Live Web Frontend
+- Single-page interface in [`notifier/public/index.html`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/notifier/public/index.html).
+- Features:
+  - Interactive JWT Role Switcher (`VIEWER`, `BIDDER`, `ADMIN`) with real-time token reissuance.
+  - Live Domain Auctions Catalog with real-time bidding inputs. Placing a bid as `VIEWER` displays a prominent 403 Forbidden alert explaining the method security denial.
+  - Live SSE Notification Stream with animated cards displaying auction ID, bidder email, bid amount ($), and an idempotent badge confirming exact deduplication.
+
+#### E. Kill & Restart Verification (Exactly-Once Delivery Proof)
+- **Scenario:**
+  1. `notifier` service is running, connected to Kafka under `notifier-group`.
+  2. Kill `notifier` (`SIGTERM` / container stop).
+  3. Place 3 successive bids on `auction-api`. `auction-api` writes bids to the database and publishes 3 `BID_PLACED` events to `auction.events`.
+  4. Restart `notifier`.
+  5. The consumer in `notifier-group` resumes from its last committed offset, reads the 3 pending messages from Kafka, deduplicates them against its store, commits offsets, and streams each notification to the browser exactly once. If Kafka redelivers any message, the idempotent filter drops the duplicate.
+
+---
+
+### 2. L8 · Make it Observable
+
+#### A. Actuator Prometheus Exposition & Naming Contract
+Spring Boot Actuator was exposed at `/actuator/prometheus` via `micrometer-registry-prometheus`.
+All custom metrics strictly follow the platform naming contract: `<service>_<subject>_<unit>`:
+
+| Archetype | Metric Name | Type | Description |
+| :--- | :--- | :--- | :--- |
+| **Liveness** | `auction_api_liveness_status` | Gauge | 1 = Healthy/Up, 0 = Down/Unhealthy |
+| **Freshness** | `auction_api_sync_last_success_timestamp_seconds` | Gauge | Epoch seconds of last successful registrar sync |
+| **Freshness** | `auction_api_sync_interval_seconds` | Gauge | Configured expected sync interval (e.g. 60s) |
+| **Error Rate** | `auction_api_registrar_errors_total` | Counter | Total failed external registrar API calls |
+| **Throughput** | `auction_api_registrar_requests_total` | Counter | Total external registrar API calls |
+| **Dependency** | `auction_api_registrar_latency_seconds` | Timer | Latency distribution & percentiles of external calls |
+
+#### B. Prometheus Alerting Rules (`alerts.yml`)
+Located at [`docker/prometheus/alerts.yml`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/docker/prometheus/alerts.yml):
+
+```yaml
+groups:
+  - name: auction-api-alerts
+    rules:
+      # Dimensionless Freshness Rule
+      - alert: RegistrarSyncLagging
+        expr: (time() - auction_api_sync_last_success_timestamp_seconds) / auction_api_sync_interval_seconds > 2
+        for: 2m
+        labels:
+          service: auction-api
+          severity: warning
+        annotations:
+          summary: "Registrar synchronization is stale"
+          description: "Sync has not succeeded for more than 2x its configured interval."
+
+      # Registrar Error Rate (5-minute window)
+      - alert: RegistrarCallHighErrorRate
+        expr: rate(auction_api_registrar_errors_total[5m]) / rate(auction_api_registrar_requests_total[5m]) > 0.05
+        for: 3m
+        labels:
+          service: auction-api
+          severity: critical
+        annotations:
+          summary: "High registrar error rate (>5%)"
+          description: "Registrar requests are failing at an elevated rate."
+
+      # Dependency Latency Degradation (p95 > 2s)
+      - alert: RegistrarLatencyHigh
+        expr: histogram_quantile(0.95, sum(rate(auction_api_registrar_latency_seconds_bucket[5m])) by (le)) > 2.0
+        for: 5m
+        labels:
+          service: auction-api
+          severity: warning
+        annotations:
+          summary: "External registrar latency degraded"
+          description: "95th percentile registrar latency exceeded 2.0 seconds."
+
+      # Service Liveness
+      - alert: ServiceDown
+        expr: auction_api_liveness_status == 0
+        for: 30s
+        labels:
+          service: auction-api
+          severity: critical
+        annotations:
+          summary: "auction-api liveness check failed"
+          description: "The service reported liveness_status = 0."
+```
+
+#### C. High-Cardinality Metric Explosion Experiment
+- **Mechanism:** In [`SecurityAndObservabilityP8L8Test.java`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/test/java/com/namekart/auction_api/security/SecurityAndObservabilityP8L8Test.java), we tested adding an unconstrained `user_id` tag (`user-uuid-1` ... `user-uuid-50`) to an auction bid counter.
+- **Observation:** Each unique label combination creates an entirely new time series in memory and in the TSDB. The number of active series exploded by $+50$ immediately ($\text{series} = \text{base\_metrics} \times |\text{labels}|$). With 100,000 active users, this results in $100,000$ active series for a single metric, causing memory bloat, high scrape latency, and Prometheus OOM crashes.
+- **Remediation:** Removed the dynamic tag. User IDs, request IDs, and query strings must belong in **structured logs** with `traceId` correlation, NEVER as Prometheus metric label values!
+
+#### D. Structured JSON Logging with Trace ID Correlation
+- Enabled Spring Boot 3 structured logging: `logging.structured.format.console=json`.
+- [`TraceIdFilter.java`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/main/java/com/namekart/auction_api/common/filter/TraceIdFilter.java) captures or generates `X-Request-ID` / `traceId` and places it into SLF4J `MDC`.
+- Sample log output:
+```json
+{"@timestamp":"2026-09-28T00:06:16.519Z","log.level":"INFO","process.pid":48660,"process.thread.name":"main","service.name":"auction-api","traceId":"59a1c5d0-39d2-421a-804b-7b00c34f51b9","message":"Successfully published BID_PLACED event 59a1c5d0-39d2-421a-804b-7b00c34f51b9 for auction 8"}
+```
+
+#### E. Answers to Laboratory Questions (L8)
+1. **Why does the naming contract require `service` and `severity` labels?**
+   - **`service`:** Enables multi-tenant alerting and unified routing in Alertmanager. Alertmanager routes alerts to specific on-call teams (e.g., Auction Team vs Core Infra) based on `service="auction-api"`. Without `service`, cross-service alerts collide or require separate rule blocks per service.
+   - **`severity`:** Dictates paging escalation policies (`critical` pages engineers at 3 AM via PagerDuty/OpsGenie; `warning` files a Slack notification or ticket for the morning).
+2. **Is each of your alerts a symptom or a cause?**
+   - `RegistrarSyncLagging`: **Symptom** (the database is becoming stale; users don't see fresh domains). The cause could be network timeout, rate limit (HTTP 429), bad API key, or DNS resolution failure.
+   - `RegistrarCallHighErrorRate`: **Symptom** (external HTTP calls are failing).
+   - `RegistrarLatencyHigh`: **Cause/Indicator** of upstream registrar degradation that can cascade into pool exhaustion.
+   - `ServiceDown`: **Symptom** (the service cannot serve traffic).
+3. **How would you know tonight that your deploy broke something?**
+   - Check the **Grafana Dashboard** immediately post-deploy:
+     1. `auction_api_liveness_status` is 1 across all pods.
+     2. `rate(http_server_requests_seconds_count[1m])` error rate (status 5xx) remains at 0.
+     3. Sync freshness ratio $(time() - last\_success) / interval$ stays $< 1.5$.
+     4. No new `critical` alerts fired in Alertmanager within 15 minutes of traffic shift.
+
+---
+
+### 3. L11 · Docker Networking and the Firewall That Lied
+
+#### A. Empirical Laboratory Execution
+The experiment was executed inside a root Linux WSL 2 environment with Docker, UFW, and iptables.
+
+1. **Step 1: Container Launch & Initial Host Access**
+   - Ran HTTP container: `docker run -d --name http-test -p 8081:80 python:3-alpine python3 -m http.server 80`
+   - Curled from local host: `curl -I http://localhost:8081` -> `HTTP/1.0 200 OK`.
+2. **Step 2: Enable Host Firewall (UFW Default Deny)**
+   - Configured UFW:
+     ```bash
+     ufw default deny incoming
+     ufw default allow outgoing
+     ufw allow 22/tcp
+     ufw --force enable
+     ```
+   - Confirmed `ufw status verbose`:
+     ```
+     Status: active
+     Default: deny (incoming), allow (outgoing), deny (routed)
+     To                         Action      From
+     --                         ------      ----
+     22/tcp                     ALLOW IN    Anywhere
+     ```
+   - UFW explicitly declared port 8081 is **NOT allowed** and incoming traffic is **denied by default**.
+3. **Step 3: External Access Test (The Lie Proven)**
+   - Curled host IP (`172.20.173.208:8081`) from Windows PowerShell (an external machine / network namespace):
+     ```powershell
+     curl.exe -I http://172.20.173.208:8081
+     ```
+   - **Result:**
+     ```
+     HTTP/1.0 200 OK
+     Server: SimpleHTTP/0.6 Python/3.14.7
+     Content-type: text/html; charset=utf-8
+     ```
+   - **Observation:** Even though UFW reported default deny and port 8081 blocked, the packet was accepted and answered!
+
+#### B. iptables Packet Path & Chain Analysis
+Inspected kernel iptables tables (`nat` and `filter`):
+
+```bash
+# NAT Table PREROUTING:
+-A PREROUTING -m addrtype --dst-type LOCAL -j DOCKER
+
+# NAT Table DOCKER Chain:
+-A DOCKER ! -i docker0 -p tcp -m tcp --dport 8081 -j DNAT --to-destination 172.17.0.2:80
+
+# FILTER Table FORWARD Chain:
+-P FORWARD DROP
+-A FORWARD -j DOCKER-USER
+-A FORWARD -j DOCKER-FORWARD
+-A FORWARD -j ufw-before-forward
+...
+
+# FILTER Table DOCKER Chain:
+-A DOCKER -d 172.17.0.2/32 ! -i docker0 -o docker0 -p tcp -m tcp --dport 80 -j ACCEPT
+```
+
+**Why UFW's rules were never consulted:**
+1. When packet arrives at `eth0` destined for `172.20.173.208:8081`, it enters `PREROUTING` in the `nat` table.
+2. The `DOCKER` nat chain executes **DNAT**: rewriting destination IP/port to container IP `172.17.0.2:80`.
+3. The Linux kernel routing engine evaluates the packet: since destination IP is `172.17.0.2` (on `docker0`), the packet is **NOT destined for the local host itself**. It is routed to the `FORWARD` filter chain.
+4. UFW places its user inbound rules (`ufw default deny incoming`) inside the **`INPUT`** chain! The packet never enters `INPUT` at all!
+5. In the `FORWARD` chain, Docker's `DOCKER-USER` chain is empty, and Docker's `DOCKER` chain contains `-A DOCKER -d 172.17.0.2/32 ... -j ACCEPT`. The packet is accepted immediately, before UFW's forward rules can run.
+
+#### C. Step 5: Fixing via `DOCKER-USER` Chain
+- Added rule:
+  ```bash
+  iptables -I DOCKER-USER -i eth0 -p tcp --dport 80 -j DROP
+  ```
+- Retried curl from Windows:
+  ```
+  curl: (28) Connection timed out after 3011 milliseconds
+  ```
+- The rule intercepted the packet in `DOCKER-USER` before Docker's `ACCEPT` rule in the `FORWARD` chain.
+
+#### D. Step 6: Loopback Binding Fix (`-p 127.0.0.1:8081:80`)
+- Flushed `DOCKER-USER` (`iptables -F DOCKER-USER`) and recreated container with explicit loopback binding:
+  ```bash
+  docker run -d --name http-test -p 127.0.0.1:8081:80 python:3-alpine python3 -m http.server 80
+  ```
+- Checked resulting NAT table:
+  ```
+  -A DOCKER -d 127.0.0.1/32 ! -i docker0 -p tcp -m tcp --dport 8081 -j DNAT --to-destination 172.17.0.2:80
+  ```
+- Notice the `-d 127.0.0.1/32` condition. When external traffic hits `eth0` (`172.20.173.208:8081`), it does NOT match `127.0.0.1`. No DNAT occurs.
+- External curl from Windows:
+  ```
+  curl: (28) Connection timed out after 3003 milliseconds (Failed!)
+  ```
+- Local curl from host:
+  ```
+  curl -I http://127.0.0.1:8081 -> HTTP/1.0 200 OK (Succeeded!)
+  ```
+
+#### E. Answers to Laboratory Questions (L11)
+1. **Why does Docker insert its rules where it does?**
+   - Docker manages container port publishing using Linux network namespaces and bridge interfaces (`docker0`). To route traffic from host physical interfaces to virtual container interfaces, it must perform DNAT in `PREROUTING`. Because the routed traffic passes *through* the host rather than *terminating* at the host, it traverses the `FORWARD` chain. Docker inserts its jumps at the very top of `FORWARD` so containers receive network traffic out-of-the-box without requiring administrators to manually configure bridge forwarding rules for every container launch.
+2. **In your teaching project, which services should bind to loopback only?**
+   - **`mysql` (`3306`)**: Internal database only consumed by `auction-api`. Must never be publicly exposed.
+   - **`kafka` (`9092`)**: Internal event broker consumed by `auction-api` and `notifier`.
+   - **`prometheus` (`9090`)**: Internal metrics store scraped by Grafana.
+   - Any administration interfaces (e.g. `kafka-ui`) unless behind an authenticated reverse proxy / VPN.
+   - In production, only the reverse proxy (Nginx / Traefik / Envoy) or public API gateway binds to `0.0.0.0:80 / 443`.
+3. **What one-line rule would you add to a deployment checklist?**
+   > *"Never publish a container port without an explicit IP binding: use `-p 127.0.0.1:host_port:container_port` for all internal dependencies and verify with `ss -tulpn` that no database or broker listens on `0.0.0.0`."*

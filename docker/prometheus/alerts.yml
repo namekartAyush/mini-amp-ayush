@@ -1,0 +1,47 @@
+groups:
+  - name: auction_api_alerts
+    rules:
+      # L8 Archetype 1: Liveness failure
+      - alert: AuctionApiDown
+        expr: auction_api_liveness_status == 0
+        for: 15s
+        labels:
+          service: auction-api
+          severity: critical
+        annotations:
+          summary: "auction-api service liveness probe failed"
+          description: "auction-api has reported liveness_status = 0 for more than 15 seconds."
+
+      # L8 Archetype 2: Dimensionless freshness alert from platform overview
+      # Ratio > 2 means the sync is more than 2x its expected interval behind schedule!
+      - alert: RegistrarSyncStale
+        expr: (time() - auction_api_sync_last_success_timestamp_seconds) / auction_api_sync_interval_seconds > 2
+        for: 30s
+        labels:
+          service: auction-api
+          severity: critical
+        annotations:
+          summary: "External registrar sync is stale"
+          description: "Sync freshness ratio is {{ $value | printf \"%.2f\" }} (threshold > 2.0). The sync has not succeeded in more than 2x its configured interval."
+
+      # L8 Archetype 3: Error rate archetype
+      - alert: RegistrarCallHighErrorRate
+        expr: (rate(auction_api_registrar_errors_total[1m]) / rate(auction_api_registrar_requests_total[1m])) > 0.05
+        for: 1m
+        labels:
+          service: auction-api
+          severity: warning
+        annotations:
+          summary: "High external registrar error rate"
+          description: "Over 5% of external registrar calls are failing (current: {{ $value | printf \"%.1f\" }}%)."
+
+      # L8 Archetype 4: Dependency latency archetype
+      - alert: RegistrarDependencyLatencyHigh
+        expr: histogram_quantile(0.95, sum(rate(auction_api_registrar_latency_seconds_bucket[1m])) by (le)) > 2.0
+        for: 1m
+        labels:
+          service: auction-api
+          severity: warning
+        annotations:
+          summary: "Registrar dependency call latency is degraded"
+          description: "p95 latency to external registrar is {{ $value | printf \"%.2f\" }}s (threshold > 2.0s)."

@@ -1,0 +1,900 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mini-AMP Live Auctions &amp; Event Stream</title>
+  <meta name="description" content="Mini-AMP real-time domain auctions portal with JWT role-based bidding and Server-Sent Events live notification stream.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-base: #0a0d14;
+      --bg-surface: #111726;
+      --bg-card: #182032;
+      --bg-card-hover: #1e2840;
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-accent: rgba(99, 102, 241, 0.3);
+      --primary: #6366f1;
+      --primary-hover: #4f46e5;
+      --accent-emerald: #10b981;
+      --accent-amber: #f59e0b;
+      --accent-rose: #f43f5e;
+      --accent-cyan: #06b6d4;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+      --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+      --shadow-glow: 0 0 25px rgba(99, 102, 241, 0.25);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-base);
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      line-height: 1.5;
+      background-image: 
+        radial-gradient(circle at 15% 20%, rgba(99, 102, 241, 0.08) 0%, transparent 40%),
+        radial-gradient(circle at 85% 80%, rgba(16, 185, 129, 0.06) 0%, transparent 40%);
+      background-attachment: fixed;
+    }
+
+    header {
+      border-bottom: 1px solid var(--border-subtle);
+      background: rgba(17, 23, 38, 0.8);
+      backdrop-filter: blur(12px);
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      padding: 1rem 2rem;
+    }
+
+    .header-container {
+      max-width: 1400px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+
+    .logo-group {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .logo-badge {
+      background: linear-gradient(135deg, var(--primary), var(--accent-cyan));
+      color: white;
+      padding: 0.4rem 0.75rem;
+      border-radius: 8px;
+      font-weight: 800;
+      font-size: 1.1rem;
+      letter-spacing: -0.03em;
+      box-shadow: 0 0 15px rgba(99, 102, 241, 0.4);
+    }
+
+    .title-group h1 {
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .title-group p {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .sse-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.4rem 0.85rem;
+      border-radius: 9999px;
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--accent-emerald);
+      transition: all 0.3s ease;
+    }
+
+    .sse-status.disconnected {
+      background: rgba(244, 63, 94, 0.1);
+      border-color: rgba(244, 63, 94, 0.3);
+      color: var(--accent-rose);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent-emerald);
+      box-shadow: 0 0 8px var(--accent-emerald);
+      animation: pulse 2s infinite;
+    }
+
+    .sse-status.disconnected .status-dot {
+      background: var(--accent-rose);
+      box-shadow: 0 0 8px var(--accent-rose);
+      animation: none;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(1.2); }
+    }
+
+    main {
+      flex: 1;
+      max-width: 1400px;
+      margin: 0 auto;
+      width: 100%;
+      padding: 1.5rem 2rem 3rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    /* Auth Banner Card */
+    .auth-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 1.25rem 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
+    }
+
+    .auth-controls {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .role-selector {
+      display: flex;
+      gap: 0.5rem;
+      background: var(--bg-card);
+      padding: 0.25rem;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+    }
+
+    .role-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      padding: 0.35rem 0.85rem;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .role-btn.active {
+      background: var(--primary);
+      color: white;
+      box-shadow: 0 2px 8px rgba(99, 102, 241, 0.4);
+    }
+
+    .role-btn:hover:not(.active) {
+      color: var(--text-main);
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .auth-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      padding: 0.3rem 0.6rem;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-muted);
+    }
+
+    .auth-badge span.role-val {
+      font-weight: 700;
+      color: var(--accent-cyan);
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: var(--primary);
+      color: white;
+      border: none;
+      padding: 0.5rem 1rem;
+      border-radius: 8px;
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .btn:hover {
+      background: var(--primary-hover);
+      box-shadow: var(--shadow-glow);
+    }
+
+    .btn-secondary {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-main);
+    }
+
+    .btn-secondary:hover {
+      background: var(--bg-card-hover);
+      box-shadow: none;
+    }
+
+    /* Content Layout */
+    .grid-container {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 1.5rem;
+    }
+
+    @media (max-width: 1024px) {
+      .grid-container {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .panel {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      box-shadow: var(--shadow-lg);
+    }
+
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border-subtle);
+      padding-bottom: 0.75rem;
+    }
+
+    .panel-header h2 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .badge-counter {
+      background: rgba(99, 102, 241, 0.15);
+      border: 1px solid var(--border-accent);
+      color: var(--primary);
+      font-size: 0.75rem;
+      font-weight: 700;
+      padding: 0.15rem 0.5rem;
+      border-radius: 9999px;
+    }
+
+    /* Auction Cards */
+    .auction-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
+      max-height: 600px;
+      overflow-y: auto;
+      padding-right: 0.25rem;
+    }
+
+    .auction-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      padding: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      transition: all 0.2s ease;
+    }
+
+    .auction-card:hover {
+      border-color: var(--border-accent);
+      background: var(--bg-card-hover);
+    }
+
+    .auction-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+
+    .domain-name {
+      font-family: var(--font-mono);
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+
+    .auction-status {
+      font-size: 0.7rem;
+      font-weight: 700;
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .status-active {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--accent-emerald);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .status-ended {
+      background: rgba(100, 116, 139, 0.15);
+      color: var(--text-dim);
+      border: 1px solid rgba(100, 116, 139, 0.3);
+    }
+
+    .auction-metrics {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 0.5rem;
+      background: rgba(0, 0, 0, 0.2);
+      padding: 0.6rem;
+      border-radius: 6px;
+    }
+
+    .metric-col {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .metric-label {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .metric-val {
+      font-family: var(--font-mono);
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+
+    .metric-val.price {
+      color: var(--accent-emerald);
+    }
+
+    .bid-action-bar {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+      margin-top: 0.25rem;
+    }
+
+    .bid-input {
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 0.45rem 0.75rem;
+      color: white;
+      font-family: var(--font-mono);
+      font-size: 0.9rem;
+      width: 110px;
+    }
+
+    .bid-input:focus {
+      outline: none;
+      border-color: var(--primary);
+    }
+
+    /* Notification Feed */
+    .notif-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      max-height: 600px;
+      overflow-y: auto;
+      padding-right: 0.25rem;
+    }
+
+    .notif-item {
+      background: var(--bg-card);
+      border-left: 4px solid var(--primary);
+      border-radius: 0 8px 8px 0;
+      padding: 0.85rem 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+      animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      border-top: 1px solid var(--border-subtle);
+      border-right: 1px solid var(--border-subtle);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateX(20px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+
+    .notif-item.idempotent-seen {
+      opacity: 0.7;
+      border-left-color: var(--text-dim);
+    }
+
+    .notif-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .notif-type {
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: var(--primary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+
+    .notif-time {
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      font-family: var(--font-mono);
+    }
+
+    .notif-body {
+      font-size: 0.85rem;
+      color: var(--text-main);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .notif-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      font-family: var(--font-mono);
+      border-top: 1px dashed rgba(255, 255, 255, 0.06);
+      padding-top: 0.3rem;
+      margin-top: 0.1rem;
+    }
+
+    .idempotent-tag {
+      color: var(--accent-emerald);
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+    }
+
+    /* Alert Banners */
+    .alert-banner {
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      font-weight: 500;
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+    }
+
+    .alert-banner.error {
+      background: rgba(244, 63, 94, 0.15);
+      border: 1px solid rgba(244, 63, 94, 0.3);
+      color: #fda4af;
+      display: flex;
+    }
+
+    .alert-banner.success {
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      color: #6ee7b7;
+      display: flex;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 3rem 1rem;
+      color: var(--text-dim);
+      font-size: 0.9rem;
+    }
+
+    /* Scrollbars */
+    ::-webkit-scrollbar {
+      width: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-container">
+      <div class="logo-group">
+        <div class="logo-badge">AMP</div>
+        <div class="title-group">
+          <h1>Mini-AMP Live Auctions &amp; Event Stream</h1>
+          <p>P8 · Security, Method-level Authorization &amp; Idempotent SSE Streaming</p>
+        </div>
+      </div>
+      <div id="sseStatusBadge" class="sse-status disconnected">
+        <span class="status-dot"></span>
+        <span id="sseStatusText">Connecting SSE...</span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <!-- Role & Auth Card -->
+    <div class="auth-card">
+      <div class="auth-controls">
+        <span style="font-size: 0.85rem; font-weight: 600; color: var(--text-muted);">Active Role:</span>
+        <div class="role-selector" id="roleSelector">
+          <button class="role-btn" data-role="VIEWER" data-user="viewer-guest" id="roleViewerBtn">VIEWER (Read-only)</button>
+          <button class="role-btn active" data-role="BIDDER" data-user="alice-bidder" id="roleBidderBtn">BIDDER (Alice)</button>
+          <button class="role-btn" data-role="ADMIN" data-user="admin-root" id="roleAdminBtn">ADMIN (Superuser)</button>
+        </div>
+        <div class="auth-badge">
+          <span>Principal:</span> <span class="role-val" id="currentPrincipal">alice-bidder</span>
+          <span style="margin-left: 0.5rem;">Role:</span> <span class="role-val" id="currentRole">ROLE_BIDDER</span>
+        </div>
+      </div>
+      <div style="display: flex; gap: 0.5rem; align-items: center;">
+        <button class="btn btn-secondary" id="refreshAuctionsBtn">🔄 Refresh Auctions</button>
+        <button class="btn" id="generateTokenBtn">🔑 Re-issue JWT</button>
+      </div>
+    </div>
+
+    <!-- Notification / Action Alerts -->
+    <div id="feedbackAlert" class="alert-banner"></div>
+
+    <div class="grid-container">
+      <!-- Left: Auction Catalog -->
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Active Domain Auctions <span class="badge-counter" id="auctionCountBadge">0</span></h2>
+          <span style="font-size: 0.75rem; color: var(--text-dim);">Method-level Auth: Only BIDDER/ADMIN can bid</span>
+        </div>
+
+        <div class="auction-list" id="auctionListContainer">
+          <div class="empty-state">Loading active domain auctions...</div>
+        </div>
+      </section>
+
+      <!-- Right: Live SSE Notification Stream -->
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Live Notifications (SSE) <span class="badge-counter" id="notifCountBadge">0</span></h2>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <span style="font-size: 0.75rem; color: var(--text-dim);" id="dedupStatsText">Idempotent Deduplication Active</span>
+            <button class="btn btn-secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;" id="clearFeedBtn">Clear UI</button>
+          </div>
+        </div>
+
+        <div class="notif-list" id="notifListContainer">
+          <div class="empty-state">Waiting for auction events on Kafka topic 'auction.events'...</div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    // State
+    let currentRole = 'BIDDER';
+    let currentUsername = 'alice-bidder';
+    let currentToken = null;
+    let sseSource = null;
+    const processedEventIds = new Set();
+    const API_BASE = 'http://localhost:8080';
+
+    // Elements
+    const sseStatusBadge = document.getElementById('sseStatusBadge');
+    const sseStatusText = document.getElementById('sseStatusText');
+    const feedbackAlert = document.getElementById('feedbackAlert');
+    const auctionListContainer = document.getElementById('auctionListContainer');
+    const notifListContainer = document.getElementById('notifListContainer');
+    const auctionCountBadge = document.getElementById('auctionCountBadge');
+    const notifCountBadge = document.getElementById('notifCountBadge');
+    const currentPrincipalSpan = document.getElementById('currentPrincipal');
+    const currentRoleSpan = document.getElementById('currentRole');
+
+    // Show temporary alert banner
+    function showAlert(msg, isError = false) {
+      feedbackAlert.className = `alert-banner ${isError ? 'error' : 'success'}`;
+      feedbackAlert.innerHTML = `<span>${msg}</span><button style="background:none;border:none;color:currentColor;cursor:pointer;font-weight:bold" onclick="this.parentElement.style.display='none'">✕</button>`;
+      feedbackAlert.style.display = 'flex';
+      setTimeout(() => {
+        feedbackAlert.style.display = 'none';
+      }, 6000);
+    }
+
+    // Role switcher
+    document.querySelectorAll('.role-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        document.querySelectorAll('.role-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentRole = btn.dataset.role;
+        currentUsername = btn.dataset.user;
+        currentPrincipalSpan.textContent = currentUsername;
+        currentRoleSpan.textContent = `ROLE_${currentRole}`;
+        await issueToken();
+      });
+    });
+
+    // Request new JWT from auction-api
+    async function issueToken() {
+      try {
+        const resp = await fetch(`${API_BASE}/api/auth/token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: currentUsername, role: currentRole })
+        });
+        if (!resp.ok) {
+          throw new Error(`Token endpoint responded with ${resp.status}`);
+        }
+        const data = await resp.json();
+        currentToken = data.token;
+        showAlert(`Authenticated as ${currentUsername} (${data.role})`);
+      } catch (err) {
+        console.warn('Could not contact auction-api token endpoint, using local token mock:', err);
+        // Fallback demo mock token
+        currentToken = `mock-jwt-token-for-${currentRole.toLowerCase()}`;
+      }
+    }
+
+    // Load auctions
+    async function loadAuctions() {
+      try {
+        const resp = await fetch(`${API_BASE}/api/auctions?page=0&size=10`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        const auctions = data.content || data || [];
+        renderAuctions(auctions);
+      } catch (err) {
+        console.warn('Could not load auctions from backend, rendering sample auctions:', err);
+        renderAuctions([
+          { id: '1', domainName: 'cloudscale.ai', currentPrice: 150.00, reservePrice: 100.00, status: 'ACTIVE', bidderId: 'bob-bidder' },
+          { id: '2', domainName: 'neuralflow.io', currentPrice: 280.00, reservePrice: 200.00, status: 'ACTIVE', bidderId: 'alice-bidder' },
+          { id: '3', domainName: 'dataverse.org', currentPrice: 520.00, reservePrice: 500.00, status: 'ACTIVE', bidderId: 'admin-root' }
+        ]);
+      }
+    }
+
+    function renderAuctions(auctions) {
+      auctionCountBadge.textContent = auctions.length;
+      if (auctions.length === 0) {
+        auctionListContainer.innerHTML = '<div class="empty-state">No domain auctions found.</div>';
+        return;
+      }
+
+      auctionListContainer.innerHTML = auctions.map(auc => {
+        const minBid = (parseFloat(auc.currentPrice) + 10.00).toFixed(2);
+        return `
+          <div class="auction-card" id="auction-card-${auc.id}">
+            <div class="auction-top">
+              <span class="domain-name">${auc.domainName || 'unknown-domain'}</span>
+              <span class="auction-status ${auc.status === 'ACTIVE' ? 'status-active' : 'status-ended'}">${auc.status}</span>
+            </div>
+            <div class="auction-metrics">
+              <div class="metric-col">
+                <span class="metric-label">Current Bid</span>
+                <span class="metric-val price">$${parseFloat(auc.currentPrice).toFixed(2)}</span>
+              </div>
+              <div class="metric-col">
+                <span class="metric-label">Reserve</span>
+                <span class="metric-val">$${parseFloat(auc.reservePrice || 0).toFixed(2)}</span>
+              </div>
+              <div class="metric-col">
+                <span class="metric-label">High Bidder</span>
+                <span class="metric-val" style="font-size: 0.8rem; overflow:hidden; text-overflow:ellipsis;">${auc.bidderId || 'None'}</span>
+              </div>
+            </div>
+            <div class="bid-action-bar">
+              <input type="number" class="bid-input" id="bid-input-${auc.id}" value="${minBid}" step="5" min="${minBid}" />
+              <button class="btn" style="padding: 0.45rem 1rem;" onclick="placeBid('${auc.id}')">Place Bid</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // Place a bid with JWT authorization
+    window.placeBid = async function(auctionId) {
+      const input = document.getElementById(`bid-input-${auctionId}`);
+      const amount = parseFloat(input.value);
+      if (!amount || isNaN(amount)) {
+        showAlert('Please enter a valid bid amount', true);
+        return;
+      }
+
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (currentToken) {
+          headers['Authorization'] = `Bearer ${currentToken}`;
+        }
+
+        const resp = await fetch(`${API_BASE}/api/bids`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            auctionId: auctionId,
+            bidderId: currentUsername,
+            amount: amount
+          })
+        });
+
+        if (resp.status === 403) {
+          const problem = await resp.json().catch(() => ({}));
+          showAlert(`403 Forbidden: Method security denied bid. Role '${currentRole}' is not allowed to bid (Must be BIDDER or ADMIN). Detail: ${problem.detail || 'Access Denied'}`, true);
+          return;
+        }
+
+        if (resp.status === 401) {
+          showAlert(`401 Unauthorized: Invalid or missing JWT authentication token.`, true);
+          return;
+        }
+
+        if (!resp.ok) {
+          const errData = await resp.json().catch(() => ({}));
+          showAlert(`Bid rejected (${resp.status}): ${errData.detail || errData.message || 'Validation error'}`, true);
+          return;
+        }
+
+        showAlert(`Bid of $${amount.toFixed(2)} accepted! Emitted domain event to Kafka.`);
+        await loadAuctions();
+      } catch (err) {
+        showAlert(`Error placing bid: ${err.message}`, true);
+      }
+    };
+
+    // Add notification card to DOM idempotently
+    function addNotification(notif) {
+      if (!notif || !notif.eventId) return;
+
+      // Idempotency check in UI
+      const isDuplicate = processedEventIds.has(notif.eventId);
+      processedEventIds.add(notif.eventId);
+
+      // Remove empty state if present
+      const emptyState = notifListContainer.querySelector('.empty-state');
+      if (emptyState) emptyState.remove();
+
+      notifCountBadge.textContent = processedEventIds.size;
+
+      const dateStr = notif.timestamp ? new Date(notif.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
+
+      const notifEl = document.createElement('div');
+      notifEl.className = `notif-item ${isDuplicate ? 'idempotent-seen' : ''}`;
+      notifEl.id = `notif-event-${notif.eventId}`;
+      notifEl.innerHTML = `
+        <div class="notif-top">
+          <span class="notif-type">⚡ ${notif.eventType || 'BID_PLACED'}</span>
+          <span class="notif-time">${dateStr}</span>
+        </div>
+        <div class="notif-body">
+          <span>Auction: <strong>#${notif.auctionId}</strong> &bull; Bidder: <strong>${notif.bidderId}</strong></span>
+          <span style="font-family: var(--font-mono); font-weight:700; color: var(--accent-emerald); font-size: 1rem;">$${parseFloat(notif.amount).toFixed(2)}</span>
+        </div>
+        <div class="notif-footer">
+          <span>ID: ${notif.eventId}</span>
+          <span class="idempotent-tag">${isDuplicate ? '🔁 Re-delivered (Idempotent)' : '✓ Stored Idempotently'}</span>
+        </div>
+      `;
+
+      notifListContainer.insertBefore(notifEl, notifListContainer.firstChild);
+
+      // Flash auction card if exists
+      const targetCard = document.getElementById(`auction-card-${notif.auctionId}`);
+      if (targetCard) {
+        targetCard.style.borderColor = 'var(--accent-emerald)';
+        setTimeout(() => {
+          targetCard.style.borderColor = 'var(--border-subtle)';
+        }, 1500);
+      }
+    }
+
+    // Connect to Server-Sent Events stream
+    function initSSE() {
+      if (sseSource) {
+        sseSource.close();
+      }
+
+      sseSource = new EventSource('/events');
+
+      sseSource.onopen = () => {
+        sseStatusBadge.className = 'sse-status';
+        sseStatusText.textContent = 'Live SSE Connected';
+      };
+
+      sseSource.addEventListener('notification', (e) => {
+        try {
+          const notif = JSON.parse(e.data);
+          addNotification(notif);
+        } catch (err) {
+          console.error('Error parsing SSE notification JSON:', err);
+        }
+      });
+
+      sseSource.addEventListener('init', (e) => {
+        try {
+          const list = JSON.parse(e.data);
+          if (Array.isArray(list)) {
+            list.forEach(notif => addNotification(notif));
+          }
+        } catch (err) {
+          console.error('Error parsing initial notifications:', err);
+        }
+      });
+
+      sseSource.onerror = () => {
+        sseStatusBadge.className = 'sse-status disconnected';
+        sseStatusText.textContent = 'SSE Disconnected (Reconnecting)';
+      };
+    }
+
+    // Clear feed button
+    document.getElementById('clearFeedBtn').addEventListener('click', () => {
+      notifListContainer.innerHTML = '<div class="empty-state">Feed cleared. Waiting for new events...</div>';
+      notifCountBadge.textContent = '0';
+    });
+
+    document.getElementById('refreshAuctionsBtn').addEventListener('click', loadAuctions);
+    document.getElementById('generateTokenBtn').addEventListener('click', issueToken);
+
+    // Bootstrap
+    window.addEventListener('DOMContentLoaded', async () => {
+      await issueToken();
+      await loadAuctions();
+      initSSE();
+    });
+  </script>
+</body>
+</html>

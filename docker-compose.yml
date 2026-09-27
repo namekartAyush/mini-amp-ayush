@@ -76,6 +76,7 @@ services:
       - DB_PORT=3306
       - DB_NAME=mini_amp
       - DB_USER=amp_user
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - APP_DATASOURCE_POOL_SIZE=20
       - APP_DATASOURCE_CONNECTION_TIMEOUT=30s
       - APP_DATASOURCE_IDLE_TIMEOUT=10m
@@ -89,6 +90,8 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/actuator/health"]
       interval: 10s
@@ -96,10 +99,68 @@ services:
       retries: 5
       start_period: 20s
 
+  notifier:
+    build:
+      context: ./notifier
+      dockerfile: Dockerfile
+    container_name: amp-notifier
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - KAFKA_BROKERS=kafka:29092
+      - KAFKA_GROUP_ID=notifier-group
+      - KAFKA_TOPIC_AUCTION_EVENTS=auction.events
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: amp-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./docker/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    depends_on:
+      - auction-api
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: amp-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
 secrets:
   db_password:
     file: ./secrets/db_password.txt
 
 volumes:
   mysql_data:
+  prometheus_data:
+  grafana_data:
 

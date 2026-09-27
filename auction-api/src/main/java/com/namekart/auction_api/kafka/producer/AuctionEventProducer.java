@@ -16,6 +16,7 @@ import java.util.concurrent.CompletableFuture;
  * Enforces business key partitioning: partition key = auctionId.
  */
 @Component
+@Profile("!test")
 public class AuctionEventProducer {
 
     private static final Logger log = LoggerFactory.getLogger(AuctionEventProducer.class);

@@ -15,6 +15,7 @@ import java.time.Duration;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
+@org.springframework.test.context.ActiveProfiles("test")
 class RegistrarBeanGraphTest {
 
     @Autowired

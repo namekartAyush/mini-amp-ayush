@@ -1,0 +1,3 @@
+node_modules/
+notifications_store.json
+.env

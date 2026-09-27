@@ -17,16 +17,29 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.Instant;
 
+import com.namekart.auction_api.kafka.config.KafkaTopicConfig;
+import com.namekart.auction_api.kafka.event.AuctionKafkaEvent;
+import com.namekart.auction_api.kafka.producer.AuctionEventProducer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
+
 @Service
 @Transactional(readOnly = true)
 public class BidService {
 
+    private static final Logger log = LoggerFactory.getLogger(BidService.class);
+
     private final BidRepository bidRepository;
     private final AuctionRepository auctionRepository;
+    private final ObjectProvider<AuctionEventProducer> auctionEventProducerProvider;
 
-    public BidService(BidRepository bidRepository, AuctionRepository auctionRepository) {
+    public BidService(BidRepository bidRepository,
+                      AuctionRepository auctionRepository,
+                      ObjectProvider<AuctionEventProducer> auctionEventProducerProvider) {
         this.bidRepository = bidRepository;
         this.auctionRepository = auctionRepository;
+        this.auctionEventProducerProvider = auctionEventProducerProvider;
     }
 
     public Page<BidResponse> listBids(String bidderEmail, Pageable pageable) {
@@ -75,6 +88,27 @@ public class BidService {
         // 2. Update the Auction with optimistic locking
         auction.setCurrentHighestBid(request.amount());
         auctionRepository.save(auction);
+
+        // 3. Publish real-time AuctionKafkaEvent to Kafka
+        auctionEventProducerProvider.ifAvailable(producer -> {
+            try {
+                String eventId = java.util.UUID.randomUUID().toString();
+                String domainName = auction.getDomain() != null ? auction.getDomain().getName() : "auction-" + auction.getId();
+                AuctionKafkaEvent event = new AuctionKafkaEvent(
+                        eventId,
+                        auction.getId(),
+                        domainName,
+                        "BID_PLACED",
+                        request.amount(),
+                        request.bidderEmail(),
+                        Instant.now()
+                );
+                producer.sendAuctionEvent(KafkaTopicConfig.AUCTION_EVENTS_TOPIC, event);
+                log.info("Successfully published BID_PLACED event {} for auction {}", eventId, auction.getId());
+            } catch (Exception e) {
+                log.warn("Failed to publish Kafka event for auction {}: {}", auction.getId(), e.getMessage());
+            }
+        });
 
         return BidResponse.fromEntity(savedBid);
     }

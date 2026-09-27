@@ -51,6 +51,10 @@ public class Auction {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt = Instant.now();
 
+    @Version
+    @Column(name = "version", nullable = false, columnDefinition = "bigint default 0")
+    private Long version = 0L;
+
     @OneToMany(mappedBy = "auction", fetch = FetchType.LAZY, cascade = CascadeType.ALL, orphanRemoval = true)
     private List<com.namekart.auction_api.bid.model.Bid> bids = new ArrayList<>();
 
@@ -151,6 +155,14 @@ public class Auction {
 
     public void setBids(List<com.namekart.auction_api.bid.model.Bid> bids) {
         this.bids = bids;
+    }
+
+    public Long getVersion() {
+        return version;
+    }
+
+    public void setVersion(Long version) {
+        this.version = version;
     }
 }
 

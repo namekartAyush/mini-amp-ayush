@@ -28,4 +28,11 @@ public class BidController {
             @PageableDefault(size = 20, sort = "amount", direction = Sort.Direction.DESC) Pageable pageable) {
         return ResponseEntity.ok(bidService.listBids(bidderEmail, pageable));
     }
+
+    @org.springframework.web.bind.annotation.PostMapping
+    public ResponseEntity<BidResponse> placeBid(
+            @jakarta.validation.Valid @org.springframework.web.bind.annotation.RequestBody com.namekart.auction_api.bid.dto.PlaceBidRequest request) {
+        BidResponse response = bidService.placeBid(request);
+        return ResponseEntity.status(org.springframework.http.HttpStatus.CREATED).body(response);
+    }
 }

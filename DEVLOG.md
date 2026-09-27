@@ -165,7 +165,69 @@
     - `app.datasource.pool-size`
     - `app.datasource.connection-timeout`
     - `app.datasource.idle-timeout`
-- **Verification:** Full automated test suite passed with **19/19 passing tests** (`ConfigurationPrecedenceTest`: 5/5, `PersistenceAndNPlusOneTest`: 5/5, `CrudAndValidationIntegrationTest`: 6/6, `RegistrarBeanGraphTest`: 2/2, `AuctionApiApplicationTests`: 1/1).
+- **Verification:** Full automated test suite passed with **19/19 passing tests** (`ConfigurationPrecedenceTest`: 5/5, `PersistenceAndNPlusOneTest`: 5/5, `CrudAndValidationIntegrationTest`: 6/6, `RegistrarBeanGraphTest`: 2/2, `AuctionApiApplicationTests`: 1/1).## Day 6, Section 5 · Relationships and Transactions
 
+- **Built & Implemented:**
+  - **Entity Modeling with Deliberate Cascade & Orphan Removal:**
+    - [`User.java`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/main/java/com/namekart/auction_api/user/model/User.java): Root aggregate.
+      - **Profile (`@OneToOne`, `cascade = CascadeType.ALL, orphanRemoval = true`):** A profile is an intrinsic extension of a user. If a user is deleted or replaced, their profile must be deleted. No standalone profile lifecycle.
+      - **Shortlist (`@OneToMany`, `cascade = CascadeType.ALL, orphanRemoval = true`):** Shortlist items belong strictly to the user who created them. If removed from the user's shortlist collection or if the user is deleted, those shortlist rows are deleted from the database.
+      - **Watchlist (`@ManyToMany`, join table `user_watchlist`, NO remove/delete cascade):** Watchlist links a user to `Auction` entities. Deleting a user or clearing their watchlist must only remove associations from `user_watchlist`—it must NEVER cascade delete the target `Auction` entities or other users' watchlists!
+  - **Single Transactional `placeBid` Method:**
+    - Built in [`BidService.java`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/main/java/com/namekart/auction_api/bid/service/BidService.java):
+      1. Validates that auction is `ACTIVE` and end time has not passed.
+      2. Validates `amount > currentHighestBid` and `amount >= startingPrice`.
+      3. Inserts `Bid` record linked to the auction.
+      4. Updates `auction.setCurrentHighestBid(amount)` and updates `updatedAt`.
+      5. Protected by `@Version private Long version` on [`Auction.java`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/main/java/com/namekart/auction_api/auction/model/Auction.java).
+  - **Optimistic Locking Double-Win Prevention:**
+    - When two users submit bids simultaneously against the same auction version, Hibernate generates:
+      `UPDATE auctions SET current_highest_bid = ?, version = ? WHERE id = ? AND version = ?`
+    - The winner's update increments the version from $V$ to $V+1$.
+    - The loser's update affects 0 rows, throwing `OptimisticLockingFailureException` (`StaleObjectStateException`). The second transaction rolls back cleanly, preventing lost updates.
+  - **Zero Partial State Rollback Verification:**
+    - Verified via [`RelationshipsAndTransactionsTest.java`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/test/java/com/namekart/auction_api/persistence/RelationshipsAndTransactionsTest.java): If any downstream exception occurs during bid placement (e.g., an intentional runtime exception or constraint failure), the entire transaction rolls back. Database assertions confirm 0 bids inserted and auction price unchanged.
 
+## L4 · Exhaust the Pool · Run & Sizing Analysis
+
+- **Built & Implemented:**
+  - Automated benchmark suite [`ConnectionPoolExhaustionAndSizingTest.java`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/test/java/com/namekart/auction_api/persistence/ConnectionPoolExhaustionAndSizingTest.java).
+  - Diagnostics controller and service ([`PoolDiagnosticsController`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/main/java/com/namekart/auction_api/common/diagnostics/PoolDiagnosticsController.java) & [`PoolDiagnosticsService`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/main/java/com/namekart/auction_api/common/diagnostics/PoolDiagnosticsService.java)) providing `/api/diagnostics/pool/read`, `/work-inside-tx`, and `/work-outside-tx`.
+- **Exact Pool Exhaustion Error:**
+  - When all pooled connections are occupied and a thread waits beyond `connectionTimeout` (configured to 5s in production, or test limit 250ms):
+    ```text
+    java.sql.SQLTransientConnectionException: BenchmarkPool-1 - Connection is not available, request timed out after 252ms (total=1, active=1, idle=0, waiting=0)
+        at com.zaxxer.hikari.pool.HikariPool.createTimeoutException(HikariPool.java:696)
+        at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:197)
+        at com.zaxxer.hikari.HikariDataSource.getConnection(HikariDataSource.java:128)
+    ```
+- **Empirical Latency Benchmark (200 requests @ 20 concurrency):**
+  | Pool Size | Wall Time | Success | Min | p50 | p95 | p99 | Max | Throughput |
+  |---|---|---|---|---|---|---|---|---|
+  | **2** | 74 ms | 200 / 200 | 0 ms | 0 ms | 47 ms | 50 ms | 50 ms | 2,702.7 rps |
+  | **10** | 16 ms | 200 / 200 | 0 ms | 0 ms | 1 ms | 1 ms | 1 ms | 12,500.0 rps |
+  | **50** | 17 ms | 200 / 200 | 0 ms | 0 ms | 1 ms | 1 ms | 1 ms | 11,764.7 rps |
+
+- **Step 5: 300ms Sleep Inside vs Outside Transaction (Pool Size 10, 60 requests @ 20 concurrency):**
+  | Work Location (Pool Size 10) | Total Wall Time | p50 Latency | p95 Latency | Throughput | Observation |
+  |---|---|---|---|---|---|
+  | **INSIDE Transaction (Held)** | **2,076 ms** | **599 ms** | **797 ms** | **28.9 rps** | Connection held across sleep; pool starved; queuing latency spikes |
+  | **OUTSIDE Transaction (Free)**| **915 ms** | **301 ms** | **302 ms** | **65.6 rps** | Connection released immediately after query; 0 pool contention (**2.3x faster**) |
+
+- **Observations & Answers:**
+  1. *Did Pool 50 run faster than Pool 10?*
+     - No. Pool 10 completed in 16ms (12,500 rps) while Pool 50 completed in 17ms (11,764 rps). On a laptop with a fixed number of CPU cores (e.g. 8-16 threads), allocating 50 connections introduces context-switching overhead, connection allocation overhead, and lock contention in HikariCP and the DB engine without any concurrency gain.
+  2. *Why is slow work inside a transaction worse than outside?*
+     - Inside `@Transactional`, the JDBC connection is checked out from HikariCP on the first statement and **held open** until the transaction completes. Non-DB delays (HTTP calls, sleep, file I/O) lock the database connection idle, reducing pool capacity to zero for other threads. Outside the transaction, the connection is returned to the pool in <1ms, leaving it available for hundreds of other requests.
+  3. *Little's Law Pool Sizing Calculation:*
+     - Formula: $L = \lambda \cdot W$
+     - Given target throughput $\lambda = 100 \text{ req/sec}$.
+     - Measured database query holding time $W \approx 10\text{ ms} = 0.01\text{ s}$.
+     - Average connections needed: $L = 100 \times 0.01 = 1\text{ connection}$.
+     - Accounting for concurrency bursts ($3\times$ peak factor) and variance: **A pool size of 5 to 10 connections** handles 100 req/sec comfortably.
+     - If slow work (300ms) is held inside the transaction: $W = 0.31\text{ s} \implies L = 100 \times 0.31 = 31\text{ connections}$ minimum!
+  4. *Telling Pool Exhaustion Apart From "The Database is Slow":*
+     - **Pool Exhaustion:** Application logs report `SQLTransientConnectionException: Connection is not available, request timed out`. Hikari Actuator metrics show `hikaricp.connections.pending > 0`, `hikaricp.connections.active == max_pool_size`, while database CPU and disk I/O are completely idle.
+     - **Slow Database:** Connection acquisition time (`hikaricp.connections.acquire`) is low (<1ms), but query execution duration (`hikaricp.connections.usage`) is high. Database CPU/IO spikes, locks are reported in `information_schema.innodb_trx` or `sys.innodb_lock_waits`, and slow query logs show long query execution times.
+- **Verification:** Full automated test suite passes **28/28 tests** cleanly across all modules.
 

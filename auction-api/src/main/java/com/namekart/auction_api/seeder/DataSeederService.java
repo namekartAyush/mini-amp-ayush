@@ -102,8 +102,8 @@ public class DataSeederService {
 
     private void seedAuctions(List<Long> domainIds, int count) {
         String sql = "INSERT INTO auctions (domain_id, starting_price, reserve_price, current_highest_bid, " +
-                     "status, start_time, end_time, created_at, updated_at) " +
-                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                     "status, start_time, end_time, created_at, updated_at, version) " +
+                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
         List<Object[]> batch = new ArrayList<>(BATCH_SIZE);
         Instant now = Instant.now();
         Timestamp nowTs = Timestamp.from(now);
@@ -120,7 +120,7 @@ public class DataSeederService {
             Timestamp startTime = Timestamp.from(now.minus(random.nextInt(5), ChronoUnit.DAYS));
             Timestamp endTime = Timestamp.from(now.plus(1 + random.nextInt(10), ChronoUnit.DAYS));
 
-            batch.add(new Object[]{domainId, startPrice, reservePrice, highestBid, status, startTime, endTime, nowTs, nowTs});
+            batch.add(new Object[]{domainId, startPrice, reservePrice, highestBid, status, startTime, endTime, nowTs, nowTs, 0L});
 
             if (batch.size() == BATCH_SIZE || i == max - 1) {
                 jdbcTemplate.batchUpdate(sql, batch);

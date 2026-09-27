@@ -1,0 +1,12 @@
+{
+  "name": "notifier-service",
+  "version": "1.0.0",
+  "description": "Mini-AMP Notification Consumer Service",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  }
+}

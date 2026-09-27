@@ -132,4 +132,40 @@
   - *Repository Method Needing Index:* `DomainRepository.findByTldAndEstimatedValueGreaterThanEqual`: column `tld` had no index, causing a full table scan (`ALL`) across all domains until composite index `(tld, estimated_value)` was added.
 - **Verification:** Full automated test suite passed with **14/14 passing tests** (`PersistenceAndNPlusOneTest`: 5/5, `RegistrarBeanGraphTest`: 2/2, `CrudAndValidationIntegrationTest`: 6/6, `AuctionApiApplicationTests`: 1/1).
 
+## L6 · Configuration Design, Precedence Hierarchy & Safe Deployment
+
+- **Built & Implemented:**
+  - **Three Profile Architecture:** Configured `application-dev.properties` (local MySQL 3307, DDL update, DEBUG SQL), `application-test.properties` (in-memory H2, DDL create-drop, isolated settings), and `application-prod.properties` (containerized MySQL, DDL validate, JSON WARN logging, secrets mounted via `configtree`).
+  - **Validated Configuration Records:** Built [`DatasourcePoolProperties`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/main/java/com/namekart/auction_api/common/config/DatasourcePoolProperties.java) (`@Min(2)`, `@Max(100)`, `@NotNull`) and enhanced [`RegistrarProperties`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/main/java/com/namekart/auction_api/registrar/config/RegistrarProperties.java) with nested `@Valid` Jakarta validation.
+  - **Production Secret Mounting:** Implemented file-based secret loading via Spring Boot `configtree:/run/secrets/`, with Docker Compose volume-mounting `./secrets/db_password.txt` to `/run/secrets/db-password`.
+  - **Notifier Service Blueprint:** Scaffolded `notifier` microservice stack with `package.json`, `Dockerfile`, `src/index.js`, and `.env.example` enforcing startup fail-fast schema validation.
+  - **Automated Precedence Proof:** Built [`ConfigurationPrecedenceTest`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/test/java/com/namekart/auction_api/config/ConfigurationPrecedenceTest.java) empirically proving the exact resolution order and fail-fast startup abortion on invalid/missing properties.
+- **Empirical Precedence Proof:**
+  - *Experiment:* Tested competing values for `registrar.dynadot.timeout`: Profile file (`5s`) vs Environment / System property (`8s` or `7s`) vs CLI argument (`2s`).
+  - *Observation:*
+    $$\text{CLI Argument } (2s) > \text{Environment/System Property } (7s) > \text{Profile File } (5s) > \text{Default}$$
+  - *Fail-Fast Startup Error:*
+    ```text
+    APPLICATION FAILED TO START
+    Binding to target DatasourcePoolProperties failed:
+        Property: app.datasource.poolSize
+        Value: "1"
+        Reason: Database pool size must be at least 2
+    ```
+- **Read-Part Configuration Key Map:**
+  - *Registrar Keys (`RegistrarProperties`):*
+    - `registrar.default-provider`
+    - `registrar.dynadot.api-key`
+    - `registrar.dynadot.base-url`
+    - `registrar.dynadot.timeout`
+    - `registrar.godaddy.api-key`
+    - `registrar.godaddy.api-secret`
+    - `registrar.godaddy.base-url`
+  - *Datasource Pool Keys (`DatasourcePoolProperties`):*
+    - `app.datasource.pool-size`
+    - `app.datasource.connection-timeout`
+    - `app.datasource.idle-timeout`
+- **Verification:** Full automated test suite passed with **19/19 passing tests** (`ConfigurationPrecedenceTest`: 5/5, `PersistenceAndNPlusOneTest`: 5/5, `CrudAndValidationIntegrationTest`: 6/6, `RegistrarBeanGraphTest`: 2/2, `AuctionApiApplicationTests`: 1/1).
+
+
 

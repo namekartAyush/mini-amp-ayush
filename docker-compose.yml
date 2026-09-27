@@ -63,6 +63,43 @@ services:
       retries: 5
       start_period: 15s
 
+  auction-api:
+    build:
+      context: ./auction-api
+      dockerfile: Dockerfile
+    container_name: amp-auction-api
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=prod
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_NAME=mini_amp
+      - DB_USER=amp_user
+      - APP_DATASOURCE_POOL_SIZE=20
+      - APP_DATASOURCE_CONNECTION_TIMEOUT=30s
+      - APP_DATASOURCE_IDLE_TIMEOUT=10m
+      - REGISTRAR_DEFAULT_PROVIDER=dynadot
+      - REGISTRAR_DYNADOT_API_KEY=prod-live-key
+      - REGISTRAR_DYNADOT_BASE_URL=https://api.dynadot.com/api3.json
+      - REGISTRAR_DYNADOT_TIMEOUT=5s
+    secrets:
+      - source: db_password
+        target: /run/secrets/db-password
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt
+
 volumes:
   mysql_data:
 

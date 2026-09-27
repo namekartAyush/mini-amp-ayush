@@ -1,5 +1,7 @@
 # Environments & IDEs
 .env
+.env.*.local
+secrets/
 .idea/
 .vscode/
 *.iml

@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
+import java.util.Optional;
 
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.Query;
@@ -16,6 +17,7 @@ import org.springframework.data.repository.query.Param;
 @Repository
 public interface AuctionRepository extends JpaRepository<Auction, Long> {
     Page<Auction> findByStatus(AuctionStatus status, Pageable pageable);
+    Optional<Auction> findByDomainId(Long domainId);
     List<Auction> findByDomainIdAndStatusIn(Long domainId, List<AuctionStatus> statuses);
 
     // Unoptimized query (causes N+1 when iterating domain and bids)

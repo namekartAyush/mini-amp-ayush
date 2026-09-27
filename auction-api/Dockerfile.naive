@@ -1,0 +1,14 @@
+# NAIVE DOCKERFILE (Anti-pattern: Copies entire source before resolving dependencies)
+# Every single line of code change invalidates the layer cache for all dependencies!
+FROM eclipse-temurin:21-jdk-alpine AS builder
+WORKDIR /app
+
+# Copies everything at once - cache is invalidated on every source edit
+COPY . .
+RUN ./mvnw clean package -DskipTests
+
+FROM eclipse-temurin:21-jre-alpine
+WORKDIR /app
+COPY --from=builder /app/target/*.jar app.jar
+EXPOSE 8080
+ENTRYPOINT ["java", "-jar", "app.jar"]

@@ -285,4 +285,104 @@
     - Tomcat stops accepting new connections (returns 503 or drains).
     - Existing in-flight requests finish cleanly within the 20s grace period.
     - JVM exits with code **143** ($128 + 15$, `SIGTERM` handled gracefully).
-- **Verification:** Full automated test suite passes **35/35 tests** cleanly (`FakeRegistrarIntegrationTest`: 7/7, `RelationshipsAndTransactionsTest`: 6/6, `ConnectionPoolExhaustionAndSizingTest`: 3/3, `ConfigurationPrecedenceTest`: 5/5, `PersistenceAndNPlusOneTest`: 5/5, `CrudAndValidationIntegrationTest`: 6/6, `RegistrarBeanGraphTest`: 2/2, `AuctionApiApplicationTests`: 1/1).
+- **Verification:** Full automated test suite passes **40/40 tests** cleanly across all modules (`FakeRegistrarIntegrationTest`: 7/7, `KafkaByHandL9Test`: 5/5, `RelationshipsAndTransactionsTest`: 6/6, `ConnectionPoolExhaustionAndSizingTest`: 3/3, `ConfigurationPrecedenceTest`: 5/5, `PersistenceAndNPlusOneTest`: 5/5, `CrudAndValidationIntegrationTest`: 6/6, `RegistrarBeanGraphTest`: 2/2, `AuctionApiApplicationTests`: 1/1).
+
+## L9 · Kafka by hand · Run, plus Read
+
+- **Built & Implemented:**
+  - Integrated Spring Kafka (`spring-kafka`, `spring-kafka-test`) into `auction-api`.
+  - Defined Kafka topic configuration ([`KafkaTopicConfig.java`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/main/java/com/namekart/auction_api/kafka/config/KafkaTopicConfig.java)) creating 3 partitions for main topics (`auction.events`, `l9.experiments`) and dead-letter topics (`auction.events.DLT`, `l9.experiments.DLT`).
+  - Implemented typed domain event record ([`AuctionKafkaEvent.java`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/main/java/com/namekart/auction_api/kafka/event/AuctionKafkaEvent.java)) with `eventId`, `auctionId`, `domainName`, `eventType`, `amount`, `bidderEmail`, `timestamp`.
+  - Implemented event producer ([`AuctionEventProducer.java`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/main/java/com/namekart/auction_api/kafka/producer/AuctionEventProducer.java)) enforcing partition keying by `auctionId` for strict per-auction causal ordering.
+  - Implemented resilient consumer ([`AuctionEventConsumer.java`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/main/java/com/namekart/auction_api/kafka/consumer/AuctionEventConsumer.java)) with:
+    1. In-memory concurrent deduplication store (`processedEventIds`) guaranteeing idempotent message handling.
+    2. `@RetryableTopic` + `@DltHandler` enabling non-blocking dead-letter recovery for unparseable poison pills.
+  - Developed end-to-end automated empirical test harness ([`KafkaByHandL9Test.java`](file:///c:/Users/Acer/Desktop/mini-amp-ayush/mini-amp-ayush/auction-api/src/test/java/com/namekart/auction_api/kafka/KafkaByHandL9Test.java)) executing all 5 manual experiments under `@EmbeddedKafka(partitions = 3)`.
+
+### Step 1: Partition Key Distribution (Keys `a`, `b`, `c` across 3 Partitions)
+- **Setup:** 30 messages produced to 3-partition topic `l9-step1-topic` (10 messages per key `a`, `b`, and `c`).
+- **Empirical Results:**
+  - Key `a` (10 messages) -> **Partition 1** (10 messages, offsets 0 to 9, 0 out-of-order).
+  - Key `b` (10 messages) -> **Partition 0** (10 messages, offsets 0 to 9, 0 out-of-order).
+  - Key `c` (10 messages) -> **Partition 2** (10 messages, offsets 0 to 9, 0 out-of-order).
+- **Mechanism:** Default partitioner computes `murmur2(key.getBytes()) & 0x7fffffff % numPartitions`. Keys are strictly deterministic.
+- **Ordering Observation:**
+  - *Within a partition:* Strict FIFO ordering is preserved (Message 0 arrives before Message 1, etc.).
+  - *Across partitions:* Messages from key `a` (partition 1) and key `b` (partition 0) interleave non-deterministically depending on consumer thread scheduling. Kafka provides **zero total ordering across partitions**.
+
+### Step 2: Consumer Group Ownership, Dynamic Rebalancing & Idle Consumer
+- **Setup:** Topic with 3 partitions (`l9-step2-topic`). A single consumer group spins up consumers sequentially:
+  1. **Consumer 1 started alone:** Assigned **all 3 partitions** (`[0, 1, 2]`).
+  2. **Consumer 2 joined:** Broker triggers group rebalance (`Generation 1`). Partition assignments reallocated: Consumer 1 owns `[0, 1]`, Consumer 2 owns `[2]`.
+  3. **Consumer 3 joined:** Rebalance occurs (`Generation 2`). Exactly 1 partition per consumer: Consumer 1 owns `[0]`, Consumer 2 owns `[1]`, Consumer 3 owns `[2]`.
+  4. **Consumer 4 joined:** Rebalance occurs (`Generation 3`).
+     - Broker assignor notifies: `Notifying assignor about the new Assignment(partitions=[])`
+     - Consumer 4 is assigned **0 partitions** (`[]`) and sits completely **idle** on standby.
+- **Rule:** A single partition can only ever be consumed by at most **one** consumer instance within the same consumer group. If consumers > partitions, the surplus consumers remain idle.
+
+### Step 3: Crash Before Commit & The Moment of Redelivery
+- **Setup:** Consumer receives message with offset 0, executes business side-effect (increments counter), and simulates an unhandled crash/process kill before invoking `commitSync()`.
+- **Observation:**
+  - When consumer crashes before commit, the broker's consumer offset for `__consumer_offsets` remains at 0.
+  - Upon consumer restart/rejoin, the coordinator resets partition fetch position to offset 0.
+  - Offset 0 is **redelivered** and processed again.
+  - Side-effect execution count: **2 times** (demonstrating the danger of raw at-least-once delivery without deduplication).
+
+### Step 4: Idempotent Consumer via Deduplication Store
+- **Setup:** Same crash-before-commit sequence repeated with consumer tracking processed message IDs in a deduplication table/store (`Set<String> processedMessageIds`).
+- **Observation:**
+  - Message 1 received at offset 0: ID recorded, business side-effect executed (execution count = 1). Consumer crashes before commit.
+  - Consumer restarts, receives redelivered message at offset 0.
+  - Deduplication check detects message ID is already present: `DUPLICATE DETECTED! Skipping business logic.`
+  - Side-effect execution count remains **exactly 1**.
+  - Consumer commits offset cleanly and moves forward.
+
+### Step 5: Poison Pill Head-of-Line Blocking vs Dead-Letter Topic (DLT)
+- **The Sabotage (Without DLT):**
+  - Messages queued in partition: `[Valid Message 1, Malformed Poison Pill (corrupt bytes), Valid Message 2]`.
+  - Consumer consumes Valid Message 1 (success).
+  - Consumer encounters Poison Pill: Deserialization exception (`IllegalArgumentException: Cannot parse payload`).
+  - Consumer crashes or loops without advancing offset.
+  - **Symptom:** **Head-of-Line Blocking!** Valid Message 2 (and all subsequent messages in that partition) is indefinitely blocked and starved from being processed.
+- **The Fix (With Dead-Letter Topic):**
+  - Deserialization exception triggers error recovery strategy (`DltStrategy.ALWAYS_RETRY_ON_ERROR`).
+  - Poison pill message is redirected to `l9-step5-topic.DLT` with error diagnostic headers (`kafka_dlt-exception-message`, `kafka_dlt-original-offset`).
+  - Offset for the poisoned record is committed on the primary topic.
+  - Consumer unblocks instantly and successfully processes Valid Message 2.
+  - Both valid messages `[1, 2]` processed; poison pill safely isolated in DLT for operational inspection.
+
+### Step 6: Topic Inventory (Auction Service & Notifier)
+
+| Topic Name | Partitions | Producing Class | Partition Key | Payload Type | Consuming Class (Group) | Idempotent? | Idempotency Mechanism / Risk |
+|---|:---:|---|---|---|---|:---:|---|
+| **`auction.events`** | 3 | `AuctionEventProducer` | `auctionId` (String) | `AuctionKafkaEvent` (JSON) | `AuctionEventConsumer`<br>(`auction-analytics-group`) | **YES** | Tracks unique `eventId` in `processedEventIds` set. Skips duplicates on redelivery. |
+| **`auction.events.DLT`** | 3 | Spring Kafka `DeadLetterPublishingRecoverer` | `auctionId` (Original Key) | Raw malformed String / Payload | `AuctionEventConsumer.handleDlt`<br>(`auction-analytics-group.DLT`) | **YES** | Read-only audit log recording quarantined poison pill payloads and error headers. |
+| **`l9.experiments`** | 3 | `KafkaByHandL9Test` | `key` (`a`, `b`, `c`, `auctionId`) | JSON / Text | `KafkaByHandL9Test` Consumers<br>(`l9-group-*`) | **YES** | Deduplication filter on `eventId` verified in Step 4. |
+| **`l9.experiments.DLT`**| 3 | Spring Kafka / Test Producer | Original Key | Raw String | `KafkaByHandL9Test` DLT Consumer | **YES** | Quarantined DLQ inspection. |
+| **`auction-events`** | 3 (env) | External / `AuctionEventProducer` | `auctionId` | JSON | `notifier/src/index.js`<br>(`notifier-group`) | **NO** | Dispatches email/SMS directly on message receipt without a deduplication cache or database transaction; duplicate delivery will cause double notifications to users. |
+
+### Architectural Answers to Core Questions
+
+1. **Why is the partition key a business decision?**
+   - In Kafka, **ordering is only guaranteed within a single partition**, never across partitions.
+   - The partition key determines which partition a message lands in via `murmur2(key) % partitions`.
+   - Choosing a partition key is therefore a critical business boundary:
+     - If you partition by `userId`, all bids and account events for a user are ordered sequentially, but an auction's bid timeline across multiple bidders will interleave across partitions and arrive out of order!
+     - If you partition by `auctionId` (our design choice), every bid, price escalation, extension, and close event for an auction is routed to the exact same partition. Any consumer listening to that partition sees a strict, chronological sequence of bids for that auction, eliminating bid race conditions.
+     - If you use null keys, Kafka round-robins across partitions, completely destroying causal ordering.
+
+2. **What does at-least-once delivery require of a consumer?**
+   - In distributed systems, network blips, rebalances, and worker restarts mean consumers frequently crash *after* executing business side-effects but *before* committing their offsets to Kafka (`__consumer_offsets`).
+   - Consequently, Kafka guarantees **at-least-once delivery** (every message is delivered 1 or more times, never 0 times).
+   - Therefore, at-least-once delivery strictly mandates that **the consumer MUST be idempotent**:
+     - Either through an **idempotent business operation** (e.g., `UPDATE auctions SET current_highest_bid = 150 WHERE id = 10 AND current_highest_bid < 150`),
+     - Or through a **deduplication store / outbox / transaction inbox** (e.g., inserting `message_id` into a unique constraint database table in the same transaction as the state change). If the message arrives a second time, the consumer detects the duplicate and skips side-effects.
+
+3. **Which of our real consumers would misbehave if a message arrived twice, and what would the symptom be?**
+   - **The misbehaving consumer:** The **`notifier` service** (`notifier/src/index.js`, consumer group `notifier-group`).
+   - **The symptom:**
+     - When an auction closes or a bid is placed, an event is published to `auction-events`.
+     - `notifier` consumes the event and triggers external SMTP/SMS calls (`sendEmail`, `sendSms`).
+     - Because email/SMS dispatch is an external side-effect that is not inherently idempotent and `notifier` lacks a message ID deduplication store, if a Kafka rebalance occurs or a worker crashes after sending the email but before committing offset, the message will be delivered twice.
+     - **Result:** The winner of an auction receives two identical "Congratulations, you won!" emails, or an outbid bidder receives duplicate alert SMS messages, causing user confusion and unnecessary SMS billing costs.
+

@@ -5,13 +5,18 @@ import jakarta.persistence.*;
 import java.math.BigDecimal;
 import java.time.Instant;
 
+import java.util.ArrayList;
+import java.util.List;
+
 @Entity
 @Table(name = "auctions", indexes = {
         @Index(name = "idx_auction_domain_id", columnList = "domain_id"),
         @Index(name = "idx_auction_status", columnList = "status"),
-        @Index(name = "idx_auction_end_time", columnList = "end_time")
+        @Index(name = "idx_auction_end_time", columnList = "end_time"),
+        @Index(name = "idx_auction_status_endtime", columnList = "status, end_time")
 })
 public class Auction {
+
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -45,6 +50,10 @@ public class Auction {
 
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt = Instant.now();
+
+    @OneToMany(mappedBy = "auction", fetch = FetchType.LAZY, cascade = CascadeType.ALL, orphanRemoval = true)
+    private List<com.namekart.auction_api.bid.model.Bid> bids = new ArrayList<>();
+
 
     public Auction() {}
 
@@ -135,4 +144,13 @@ public class Auction {
     public Instant getUpdatedAt() {
         return updatedAt;
     }
+
+    public List<com.namekart.auction_api.bid.model.Bid> getBids() {
+        return bids;
+    }
+
+    public void setBids(List<com.namekart.auction_api.bid.model.Bid> bids) {
+        this.bids = bids;
+    }
 }
+

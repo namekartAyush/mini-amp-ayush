@@ -58,3 +58,35 @@
   | **Node.js** | `Promise.all` + native `fetch` | **338 ms** (0.34s) | **60.1x** |
   | **Node.js** | *Sabotage: 200ms synchronous CPU loop* | **20,303 ms** (20.30s) | 1.0x |
 - **Surprised me:** How Project Loom Virtual Threads enabled blocking synchronous Java code (`client.send(...)`) to match Node's asynchronous event loop throughput with zero reactive framework boilerplate.
+
+## P4 / L5 · Persistence, Seeder, N+1 Elimination & Indexing
+- **Built:**
+  - `Bid` entity (`bids` table) with `@ManyToOne` to `Auction` and `@OneToMany` in `Auction` (`bids`).
+  - High-speed batch database seeder (`DataSeederService`, `DatabaseSeederRunner`) using `JdbcTemplate.batchUpdate()` capable of seeding tens of thousands of domains, auctions, and bids in seconds. Triggered via CLI flag `--seed`.
+  - Diagnostics service (`AuctionDiagnosticsService`) and integration test (`PersistenceAndNPlusOneTest`) reproducing the N+1 query problem and verifying its elimination.
+- **N+1 Query Problem & Resolution:**
+  - **The Symptom:** Loading 10 active auctions and accessing their `domain.name` and `bids.size()` in unoptimized code resulted in **21 SQL queries** ($1 \text{ auction query} + 10 \text{ domain queries} + 10 \text{ bids queries}$).
+    ```text
+    Hibernate Session Metrics (Unoptimized):
+      - 21 JDBC statements prepared
+      - 21 JDBC statements executed
+    ```
+  - **The Fix:** Formulated an optimized JPQL `JOIN FETCH` query in `AuctionRepository`:
+    ```java
+    @Query("SELECT DISTINCT a FROM Auction a JOIN FETCH a.domain LEFT JOIN FETCH a.bids WHERE a.status = :status")
+    List<Auction> findTop20ByStatusWithDomainAndBidsOptimized(@Param("status") AuctionStatus status);
+    ```
+  - **The Proof:** Number of executed SQL statements dropped from **21 queries down to exactly 1 query** ($21\times$ reduction in DB round trips).
+    ```text
+    Hibernate Session Metrics (Optimized):
+      - 1 JDBC statement prepared
+      - 1 JDBC statement executed
+    ```
+- **Indexing & Execution Plans (`EXPLAIN` Analysis):**
+  - **Target Query:** High-frequency bidder query: `SELECT * FROM bids WHERE bidder_email = 'bidder5@investorgroup.com' ORDER BY amount DESC`.
+  - **Composite Index Added:** `@Index(name = "idx_bid_bidder_amount", columnList = "bidder_email, amount")` on `bids` table, plus `@Index(name = "idx_auction_status_endtime", columnList = "status, end_time")` on `auctions`.
+  - **Execution Plan Improvement:**
+    - *Before Index:* Full table scan (`type: ALL`, scanning all 50,000+ rows, followed by file sort `Using filesort`).
+    - *After Index:* Direct index lookup (`type: ref`), utilizing `idx_bid_bidder_amount`. `rows` scanned dropped from 50,000 down to matching bidder rows, and file sort eliminated because the composite index naturally stores `amount` ordered.
+- **Verification:** Automated integration test `PersistenceAndNPlusOneTest` passed with 3/3 tests (seeding verification, Hibernate statistics query counting, and EXPLAIN plan inspection). Full suite: 12/12 passing tests.
+

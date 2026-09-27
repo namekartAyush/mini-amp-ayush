@@ -101,6 +101,8 @@ cd auction-api
 - [x] **P2 · Architecture, Packaging & Bean Graph**: Package-by-Feature, `@ConfigurationProperties` record for registrar settings, strict constructor injection, and deterministic bean graph.
 - [x] **P3 · Domain & Auction CRUD & Validation**: Complete CRUD endpoints, pagination/sorting, Jakarta request validation, and uniform RFC 7807 `ProblemDetail` (400 validation errors, 404 missing resource).
 - [x] **L3 · Three runtimes, one worker**: Concurrency benchmark comparing thread-per-request, Project Loom virtual threads, Python asyncio, and Node.js event loop with sabotage analysis.
+- [x] **P4 · Persistence & L5 Diagnostics**: Bid entity with relationships, high-speed batch seeder (`--seed`), SQL logging with Hibernate session metrics, N+1 query elimination via `JOIN FETCH`, and composite index execution plan (`EXPLAIN`).
+
 
 
 

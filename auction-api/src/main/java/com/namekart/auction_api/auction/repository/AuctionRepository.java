@@ -29,5 +29,8 @@ public interface AuctionRepository extends JpaRepository<Auction, Long> {
            "LEFT JOIN FETCH a.bids " +
            "WHERE a.status = :status")
     List<Auction> findTop20ByStatusWithDomainAndBidsOptimized(@Param("status") AuctionStatus status);
+
+    List<Auction> findByStatusAndEndTimeBetween(AuctionStatus status, java.time.Instant start, java.time.Instant end);
 }
+
 

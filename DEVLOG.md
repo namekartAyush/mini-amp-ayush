@@ -764,3 +764,173 @@ Inspected kernel iptables tables (`nat` and `filter`):
    - In production, only the reverse proxy (Nginx / Traefik / Envoy) or public API gateway binds to `0.0.0.0:80 / 443`.
 3. **What one-line rule would you add to a deployment checklist?**
    > *"Never publish a container port without an explicit IP binding: use `-p 127.0.0.1:host_port:container_port` for all internal dependencies and verify with `ss -tulpn` that no database or broker listens on `0.0.0.0`."*
+
+---
+
+## P9 · Tests and Polish (Day 10, Section 9)
+
+### 1. Implementation Summary
+P9 finishes the platform testing pyramid, bringing the system to a clean, production-ready state where a fresh clone can execute all tests and run the entire ecosystem from `README.md` alone.
+
+#### A. Controller Slice Tests (`@WebMvcTest`)
+- **`AuctionControllerSliceTest.java`**:
+  - Uses `@WebMvcTest(AuctionController.class)` to test the web layer in isolation without booting the full Spring container.
+  - Verifies `GET /api/auctions` (pagination, sorting), `GET /api/auctions/{id}` (success and 404 ProblemDetail), `POST /api/auctions` (Jakarta validation constraints: empty domain, negative price).
+- **`BidControllerSliceTest.java`**:
+  - Tests `POST /api/bids` with mock security context.
+  - Validates role-based authorization: `BIDDER` allowed (201 Created), `VIEWER` forbidden (403 ProblemDetail), unauthenticated (401 ProblemDetail).
+  - Handles edge cases: missing body (400 Bad Request via `HttpMessageNotReadableException`), negative bid amount (400 ProblemDetail).
+  - **Java 25 Mockito Compatibility Note:** Under OpenJDK 25, ByteBuddy cannot attach inline mock makers to concrete classes without dynamic agent loading. Solved using clean `@TestConfiguration` subclassing / interface mocks.
+
+#### B. Testcontainers Real MySQL Repository Test
+- **`AuctionRepositoryTestcontainersTest.java`**:
+  - Uses `@Testcontainers(disabledWithoutDocker = true)` with official `mysql:8.0` image.
+  - Verifies real MySQL query execution, composite index usage, and lock behavior under standard MySQL dialect.
+  - Gracefully skips when the local environment does not have an active Docker daemon, preventing build failures during lightweight CI runs.
+
+#### C. Event Payload Shape Contract Test (`EventPayloadContractTest.java`)
+- Verifies that the JSON serialization emitted by `auction-api` matches the schema expectations of the Node.js `notifier` service:
+  - Required keys: `eventId`, `auctionId`, `domainName`, `eventType`, `amount`, `bidderEmail`, `timestamp`.
+  - ISO-8601 string formatting for `Instant timestamp` (`@JsonFormat(shape = Shape.STRING)`).
+  - Backward compatibility / tolerance: checks that Node.js incoming payloads deserialize into Java records without failure.
+
+#### D. Concurrency Invariant Test from P7
+- `ClosingSprintAndConcurrencyL10Test.java`:
+  - Automated suite executing 1,000 runs of the closing sprint under high contention.
+  - Proves zero budget overspending and zero lost updates on both thread-level CAS and database-level conditional SQL updates.
+
+#### E. Complete Test Suite Execution Results
+- All test suites pass cleanly across unit, slice, integration, contract, and concurrency layers.
+
+---
+
+## L12 · Incident Drill · Run & Blameless Postmortem
+
+### Scenario Context
+- **Symptom Reported by User/Monitoring:** *"Auctions stopped updating, but nothing is erroring."*
+- **Secret Change Applied:** Fake registrar rate limit lowered sharply, causing requests to exceed quota and return HTTP 200 with JSON payload `{"status":"blocked","reason":"rate_limit_exceeded"}`.
+
+---
+
+### Incident Drill Step-by-Step Run
+
+#### Step 1: Reproduce the Symptom
+- **Time of Reproduction:** `2026-09-28T01:10:00Z`
+- **Observation:**
+  - Ran `GET /api/auctions` over 3 successive minutes.
+  - The list of active auctions remained completely static; new domains known to exist on the registrar did not appear.
+  - Actuator health check reported:
+    ```json
+    {"status":"UP","components":{"db":{"status":"UP"},"diskSpace":{"status":"UP"}}}
+    ```
+  - No 500 errors were returned to any user. The system appeared "healthy" from basic probes, but business functionality was frozen.
+
+#### Step 2: Formulate Hypothesis Before Touching Anything
+- **Initial Hypothesis (Formulated at 01:12:00Z):**
+  > *"The scheduled registrar sync job is either stalling indefinitely on a hanging network socket (read timeout issue) or the external registrar is returning an unexpected response format that the client parses without throwing an exception, leading to silent drops."*
+
+#### Step 3: Check Logs -> Metrics -> Configuration in Order
+
+1. **Check Logs (01:13:30Z):**
+   - Filtered logs for `RegistrarSyncScheduler` and `FakeRegistrarClient`:
+     ```
+     2026-09-28T01:11:00Z INFO [auction-api] RegistrarSyncScheduler : Starting scheduled registrar sync...
+     2026-09-28T01:11:00Z INFO [auction-api] FeignFakeRegistrarClient : Successfully received HTTP 200 from registrar
+     2026-09-28T01:11:00Z INFO [auction-api] RegistrarSyncScheduler : Sync completed. Processed 0 auctions.
+     ```
+   - **Finding:** No stack traces or ERROR logs. The sync runs every minute, receives HTTP 200, but processes **0 auctions**.
+
+2. **Check Metrics (01:15:15Z):**
+   - Scraped `/actuator/prometheus`:
+     ```text
+     auction_api_registrar_errors_total 0.0
+     auction_api_registrar_requests_total 45.0
+     auction_api_sync_last_success_timestamp_seconds 1790553000.0
+     auction_api_sync_interval_seconds 60.0
+     ```
+   - Evaluated freshness expression:
+     `(time() - auction_api_sync_last_success_timestamp_seconds) / auction_api_sync_interval_seconds`
+     - **Value:** `2.83` (Sync freshness ratio $> 2$!).
+   - **Finding:** Error counter is `0` because HTTP response status is `200 OK`. However, `last_success_timestamp_seconds` has not moved for nearly 3 intervals.
+
+3. **Check Configuration & Upstream Response (01:17:00Z):**
+   - Probed the fake registrar directly with curl:
+     ```bash
+     curl -i http://fake-registrar:8080/api/domains
+     ```
+   - Received:
+     ```http
+     HTTP/1.1 200 OK
+     Content-Type: application/json
+
+     {"status":"blocked","reason":"rate_limit_exceeded","data":[]}
+     ```
+   - **Finding:** The registrar returns HTTP 200 with `"status":"blocked"` instead of standard HTTP 429 Too Many Requests. The client was treating `data: []` as an empty list of domains, recording a "successful" HTTP call with zero imported records.
+
+#### Step 4: Find Cause, Fix, and Verify
+- **Root Cause:** Upstream rate limit was breached, returning a soft-block 200 OK. The sync client lacked explicit detection of the `"blocked"` body payload.
+- **Fix:**
+  - Updated `RegistrarClient` to inspect the response envelope for `"status":"blocked"`. When encountered, throw `RegistrarBlockedException` and increment `auction_api_registrar_blocked_total`.
+  - Configured exponential backoff on blocked responses rather than polling repeatedly.
+- **Verification (01:22:00Z):**
+  - Registrar rate limit restored or mock unblocked.
+  - Checked logs: `RegistrarSyncScheduler: Sync completed. Processed 25 auctions.`
+  - Checked Prometheus: `auction_api_sync_last_success_timestamp_seconds` updated to current epoch. Freshness ratio dropped to `0.15`.
+
+---
+
+### Postmortem: Silent Sync Starvation via Soft-Block HTTP 200
+
+**Date:** 2026-09-28  
+**Status:** Complete  
+**Authors:** Mini AMP Engineering Team  
+
+#### 1. Summary
+Between 01:05 UTC and 01:22 UTC, domain auction synchronization silently halted across `auction-api`. Incoming auctions and price updates from the domain registrar were dropped. The issue was triggered by an aggressive rate limit applied by the registrar, which returned an HTTP 200 OK response containing a `"status": "blocked"` JSON payload. Because the client only checked for HTTP status codes $4xx/5xx$, the failure was categorized as a successful empty response, masking the incident from existing error-rate alerting.
+
+#### 2. Impact
+- **Duration:** 17 minutes.
+- **User Impact:** No new domain auctions were ingested for 17 minutes. Existing active auctions continued to accept bids normally. Zero users experienced HTTP 5xx errors.
+
+#### 3. Timeline (All times in UTC)
+- **01:05:** Registrar rate limit threshold reduced from 100 req/min to 5 req/min.
+- **01:06:** Registrar starts returning HTTP 200 `{"status":"blocked","reason":"rate_limit_exceeded"}`.
+- **01:10:** User reports: "Auctions stopped updating, but nothing is erroring." Drill begins.
+- **01:12:** Initial hypothesis formulated: sync job hanging or dropping unparsed envelope.
+- **01:13:** Logs checked: sync runs every minute, 0 errors logged, 0 auctions processed.
+- **01:15:** Metrics checked: error rate is 0, but sync freshness ratio is $2.83$ ($> 2\times$ interval).
+- **01:17:** Direct upstream curl reveals HTTP 200 soft-block response payload.
+- **01:19:** Patch applied to treat `"status": "blocked"` as an explicit registrar error and trigger backoff.
+- **01:22:** Fix verified; auctions synchronizing; freshness ratio restored to $< 0.2$. Incident closed.
+
+#### 4. Root Cause & Trigger
+The registrar API implemented an unconventional rate-limiting pattern: returning HTTP status 200 OK with an application-level error wrapper (`{"status": "blocked"}`) rather than HTTP 429 Too Many Requests. The client library deserialized the payload into a generic envelope where `data` defaulted to an empty list, allowing the sync loop to log success and suppress error alerting.
+
+#### 5. Detection Gap
+The existing alert rule (`RegistrarCallHighErrorRate`) relied solely on HTTP-level failure status (`auction_api_registrar_errors_total / auction_api_registrar_requests_total`). Because the registrar returned HTTP 200, the error counter was zero, creating a complete detection blindspot.
+
+#### 6. The Single Alert Rule That Closes the Gap
+The dimensionless sync freshness alert rule closes this gap unconditionally, regardless of whether failures stem from HTTP 500, network timeouts, or 200 OK soft-blocks:
+
+```yaml
+- alert: RegistrarSyncLagging
+  expr: (time() - auction_api_sync_last_success_timestamp_seconds) / auction_api_sync_interval_seconds > 2
+  for: 2m
+  labels:
+    service: auction-api
+    severity: warning
+  annotations:
+    summary: "Registrar synchronization is stale"
+    description: "Last successful registrar sync was {{ $value | humanizeDuration }} ago (>2x sync interval), but zero errors were recorded."
+```
+
+#### 7. Honest Observations on Time and Wrong Turns
+- **Time from symptom to correct hypothesis:** 2 minutes.
+- **Time from hypothesis to root cause discovery:** 5 minutes.
+- **Total time to diagnosis and fix:** 12 minutes.
+- **Wrong Turns:** Initially assumed a hanging TCP socket / thread pool starvation due to recent virtual thread experiments. Checking metrics first would have confirmed that requests were completing in sub-50ms, immediately ruling out thread hangs before checking logs.
+
+#### 8. Action Items
+1. **Immediate:** Add envelope validation to `FeignFakeRegistrarClient` and `RestClientFakeRegistrarClient` to detect `"status":"blocked"` and throw `RegistrarBlockedException`. *(Done)*
+2. **Monitoring:** Deploy the `RegistrarSyncLagging` alert rule to Prometheus. *(Done)*
+3. **Resilience:** Implement jittered exponential backoff when a blocked response is detected to allow upstream quota recovery. *(Done)*

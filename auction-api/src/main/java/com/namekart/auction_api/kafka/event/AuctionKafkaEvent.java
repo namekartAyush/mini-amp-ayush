@@ -1,5 +1,7 @@
 package com.namekart.auction_api.kafka.event;
 
+import com.fasterxml.jackson.annotation.JsonFormat;
+
 import java.math.BigDecimal;
 import java.time.Instant;
 
@@ -13,5 +15,6 @@ public record AuctionKafkaEvent(
         String eventType, // AUCTION_CREATED, BID_PLACED, AUCTION_CLOSED
         BigDecimal amount,
         String bidderEmail,
+        @JsonFormat(shape = JsonFormat.Shape.STRING)
         Instant timestamp
 ) {}
